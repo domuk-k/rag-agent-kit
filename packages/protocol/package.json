@@ -1,0 +1,17 @@
+{
+  "name": "@repo/protocol",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ai-sdk": "./src/ai-sdk/index.ts",
+    "./eden": "./src/eden/index.ts"
+  },
+  "dependencies": {
+    "@elysiajs/eden": "^1.4.6",
+    "@repo/api": "workspace:*",
+    "zod": "^3.24.0"
+  }
+}
