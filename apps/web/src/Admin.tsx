@@ -42,6 +42,11 @@ export default function Admin() {
   const [editingFaq, setEditingFaq] = useState<FaqItem | null>(null);
   const [editForm, setEditForm] = useState({ category: '', question: '', answer: '' });
 
+  // Loading states
+  const [isAdding, setIsAdding] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
   // Load FAQs and categories
   const loadData = async () => {
     try {
@@ -79,6 +84,7 @@ export default function Admin() {
 
   const handleAddFaq = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsAdding(true);
     try {
       const res = await fetch(`${API_URL}/api/faq`, {
         method: 'POST',
@@ -98,11 +104,14 @@ export default function Admin() {
       }
     } catch {
       toast.error('네트워크 오류가 발생했습니다');
+    } finally {
+      setIsAdding(false);
     }
   };
 
   const handleDeleteFaq = async (id: number) => {
     if (!confirm('정말 삭제하시겠습니까?')) return;
+    setDeletingId(id);
     try {
       const res = await fetch(`${API_URL}/api/faq/${id}`, {
         method: 'DELETE',
@@ -117,6 +126,8 @@ export default function Admin() {
       }
     } catch {
       toast.error('네트워크 오류가 발생했습니다');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -138,6 +149,7 @@ export default function Admin() {
     e.preventDefault();
     if (!editingFaq) return;
 
+    setIsEditing(true);
     try {
       const res = await fetch(`${API_URL}/api/faq/${editingFaq.id}`, {
         method: 'PUT',
@@ -157,6 +169,8 @@ export default function Admin() {
       }
     } catch {
       toast.error('네트워크 오류가 발생했습니다');
+    } finally {
+      setIsEditing(false);
     }
   };
 
@@ -239,7 +253,9 @@ export default function Admin() {
                 onChange={(e) => setNewFaq({ ...newFaq, answer: e.target.value })}
                 required
               />
-              <button type="submit">추가</button>
+              <button type="submit" disabled={isAdding}>
+                {isAdding ? '추가 중...' : '추가'}
+              </button>
             </form>
           </section>
 
@@ -264,8 +280,12 @@ export default function Admin() {
                       <button className="edit" onClick={() => openEditModal(faq)}>
                         수정
                       </button>
-                      <button className="delete" onClick={() => handleDeleteFaq(faq.id)}>
-                        삭제
+                      <button
+                        className="delete"
+                        onClick={() => handleDeleteFaq(faq.id)}
+                        disabled={deletingId === faq.id}
+                      >
+                        {deletingId === faq.id ? '삭제 중...' : '삭제'}
                       </button>
                     </td>
                   </tr>
@@ -335,8 +355,12 @@ export default function Admin() {
                 required
               />
               <div className="modal-actions">
-                <button type="button" onClick={closeEditModal}>취소</button>
-                <button type="submit">저장</button>
+                <button type="button" onClick={closeEditModal} disabled={isEditing}>
+                  취소
+                </button>
+                <button type="submit" disabled={isEditing}>
+                  {isEditing ? '저장 중...' : '저장'}
+                </button>
               </div>
             </form>
           </div>
