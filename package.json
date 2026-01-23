@@ -1,0 +1,25 @@
+{
+  "name": "rag-agent-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun run --filter './apps/*' dev",
+    "dev:api": "bun run --filter '@repo/api' dev",
+    "dev:web": "bun run --filter '@repo/web' dev",
+    "build": "bun run --filter './packages/*' build && bun run --filter './apps/*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "qdrant:setup": "bun run --filter '@repo/vector' setup",
+    "seed": "bun run --filter '@repo/db' seed"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.1.13",
+    "@langchain/openai": "^1.2.2",
+    "langchain": "^1.2.8",
+    "zod": "^4.3.5"
+  }
+}
