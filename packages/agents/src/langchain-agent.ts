@@ -1,13 +1,12 @@
 import { ChatOpenAI } from '@langchain/openai';
-import { tool } from '@langchain/core/tools';
 import {
   HumanMessage,
   SystemMessage,
   AIMessage,
   type BaseMessage,
 } from '@langchain/core/messages';
-import { z } from 'zod';
 import { searchFaq } from '@repo/vector';
+import { logAnalyticsEvent } from '@repo/db';
 import type { FaqSearchResult } from '@repo/shared';
 
 // Event emitter for progress status
@@ -21,142 +20,41 @@ export type ChatEvent =
   | { type: 'action'; actions: { label: string; query: string }[] }
   | { type: 'source'; sources: { title: string; url?: string; category: string }[] };
 
-// Define the check order status tool (Mock)
-const createCheckOrderStatusTool = (onStatus?: StatusCallback) =>
-  tool(
-    async ({ orderId }) => {
-      onStatus?.('주문 조회 중...');
-      console.log(`[checkOrderStatus] OrderId: "${orderId}"`);
+// ─── Score-based routing thresholds ──────────────────────────────
+const HIGH_CONFIDENCE = 0.8;   // 직접 반환 (LLM 호출 없음)
+const LOW_CONFIDENCE = 0.3;    // 범위 외 안내 (LLM 호출 없음)
 
-      // Mock data - 실제 구현시 DB 또는 외부 API 연동
-      const mockOrders: Record<string, { status: string; items: string; date: string; shipping?: string }> = {
-        '2024010001': {
-          status: '배송완료',
-          items: '상품A x 2, 상품B x 1',
-          date: '2024-01-15',
-          shipping: 'CJ대한통운 1234567890',
-        },
-        '2024010002': {
-          status: '배송중',
-          items: '상품C x 1',
-          date: '2024-01-16',
-          shipping: '한진택배 9876543210',
-        },
-        '2024010003': {
-          status: '상품준비중',
-          items: '상품D x 3',
-          date: '2024-01-17',
-        },
-        '2024010004': {
-          status: '주문취소',
-          items: '상품E x 1',
-          date: '2024-01-10',
-        },
-      };
-
-      const order = mockOrders[orderId];
-      if (!order) {
-        return `주문번호 "${orderId}"를 찾을 수 없습니다. 주문번호를 다시 확인해주세요.`;
-      }
-
-      let result = `📦 주문번호: ${orderId}\n`;
-      result += `📅 주문일: ${order.date}\n`;
-      result += `📋 상품: ${order.items}\n`;
-      result += `🚚 상태: ${order.status}`;
-      if (order.shipping) {
-        result += `\n🔍 운송장: ${order.shipping}`;
-      }
-
-      return result;
-    },
-    {
-      name: 'check_order_status',
-      description: '주문번호로 주문 상태를 조회합니다. 배송 상태, 주문 내역 확인에 사용하세요.',
-      schema: z.object({
-        orderId: z.string().describe('조회할 주문번호 (예: 2024010001)'),
-      }),
-    }
-  );
-
-// Define the search FAQ tool
-const createSearchFaqTool = (onStatus?: StatusCallback) =>
-  tool(
-    async ({ query }) => {
-      onStatus?.('FAQ 검색 중...');
-      console.log(`[searchFaq] Query: "${query}"`);
-
-      // Category filter is optional - vector search handles relevance
-      const results = await searchFaq(query, {
-        category: undefined, // Let vector search find best matches
-        topK: 5,
-        minScore: 0.3, // Lower threshold for more inclusive results
-      });
-
-      console.log(`[searchFaq] Found ${results.length} results`);
-
-      if (results.length === 0) {
-        return '관련 FAQ를 찾지 못했습니다.';
-      }
-
-      return results
-        .map((r, i) => `[${i + 1}] Q: ${r.question}\nA: ${r.answer}`)
-        .join('\n\n');
-    },
-    {
-      name: 'search_faq',
-      description:
-        '스마트스토어 FAQ를 검색합니다. 상품관리, 정산, 배송, 주문관리, 고객응대, 프로모션 등 관련 질문에 사용하세요.',
-      schema: z.object({
-        query: z.string().describe('검색할 질문 또는 키워드 (자연어로 입력)'),
-      }),
-    }
-  );
-
-const SYSTEM_PROMPT = `당신은 네이버 스마트스토어 FAQ 챗봇입니다.
+const SYSTEM_PROMPT = `당신은 온라인 교육 플랫폼의 학습지원 챗봇입니다.
 
 ## 역할
-- 스마트스토어 판매자의 질문에 친절하게 답변합니다.
-- 적절한 도구를 사용하여 정보를 검색합니다.
+학습자의 질문에 친절하고 정확하게 답변합니다.
 
-## 사용 가능한 도구
-1. **search_faq**: FAQ 데이터베이스를 검색합니다.
-2. **check_order_status**: 주문번호로 주문 상태를 조회합니다.
+## 응답 규칙
 
-## 규칙
-1. 스마트스토어 관련 질문: search_faq 도구로 검색 후 답변
-2. 주문 조회 요청: check_order_status 도구로 주문 상태 확인
-3. FAQ 범위 밖 질문: 정중히 안내하고 도움 가능한 주제 제시
-4. 항상 한국어로 응답
-5. 검색 결과가 없으면 솔직히 모른다고 말하고 고객센터 안내
+### 1. FAQ 원문 충실성 (가장 중요)
+- FAQ 검색 결과의 **모든 정보를 빠짐없이** 포함해야 합니다
+- 숫자, 조건, 예외사항, 연락처 등 세부사항을 절대 생략하지 마세요
+- 원문의 항목이 4개면 응답에도 4개 모두 포함
 
-## 답변 가능 주제
-- 상품 등록/수정/삭제
-- 정산, 수수료, 입금
-- 배송 설정, 송장
-- 주문 관리, 취소, 환불
-- 반품, 교환
-- 주문 상태 조회 (주문번호 필요)`;
+### 2. 구성 및 말투
+- 원문을 읽기 쉽게 재구성하는 것은 허용
+- 친근하고 공손한 말투 사용 (~해요, ~드려요)
+- 번호 목록, 굵은 글씨 등 포맷팅 활용 가능
+
+### 3. 기타
+- 항상 한국어로 응답
+
+## 예시
+FAQ 원문: "1. 특수문자 제거 2. 확장자 확인 3. 압축 업로드 4. Comment란 붙여넣기"
+→ 4가지 모두 응답에 포함해야 함 (일부만 언급 금지)`;
+
+const OUT_OF_SCOPE_MESSAGE =
+  '해당 질문은 제가 도움드리기 어려운 내용이에요.\n학습 관련 문의는 **학습지원센터(02-8282-777)**로 연락해주시면 안내받으실 수 있습니다.';
 
 export interface ChatOptions {
   onStatus?: StatusCallback;
   onToken?: (token: string) => void;
 }
-
-// Guard threshold - questions below this score are considered out of scope
-const GUARD_THRESHOLD = 0.25;
-
-const GUARD_MESSAGE = `죄송합니다. 해당 질문은 스마트스토어 FAQ 범위를 벗어납니다.
-
-저는 다음 주제에 대해 도움을 드릴 수 있어요:
-• 상품 등록/수정/삭제
-• 정산, 수수료, 입금
-• 배송 설정, 송장 등록
-• 주문 관리, 취소/환불
-• 반품/교환 처리
-• 고객 문의 응대
-• 스토어 관리, 프로모션
-
-위 주제에 대해 궁금한 점이 있으시면 질문해 주세요!`;
 
 export async function* chat(
   userMessage: string,
@@ -164,27 +62,40 @@ export async function* chat(
 ): AsyncGenerator<string, void, unknown> {
   const { onStatus, onToken } = options;
 
-  onStatus?.('질문 분석 중...');
+  onStatus?.('FAQ 검색 중...');
 
-  // Guard Pre-filter: Check if question is in FAQ scope before calling LLM
-  const preCheck = await searchFaq(userMessage, { topK: 1, minScore: 0 });
-  const bestScore = preCheck[0]?.similarity ?? 0;
+  const results = await searchFaq(userMessage, { topK: 5, minScore: LOW_CONFIDENCE });
+  const topScore = results[0]?.similarity ?? 0;
 
-  console.log(`[Guard] Query: "${userMessage}", Best score: ${bestScore.toFixed(3)}`);
-
-  if (bestScore < GUARD_THRESHOLD) {
-    // Out of scope - return guard message without LLM call
-    console.log(`[Guard] Below threshold (${GUARD_THRESHOLD}), returning guard message`);
-    onStatus?.('완료');
-    for (const char of GUARD_MESSAGE) {
+  // ─── Score-based routing ───────────────────────────
+  if (topScore < LOW_CONFIDENCE || results.length === 0) {
+    // LOW: 범위 외 → 정해진 안내 메시지
+    logAnalyticsEvent({
+      eventType: 'guard_rejected',
+      metadata: { query: userMessage, score: topScore },
+    });
+    for (const char of OUT_OF_SCOPE_MESSAGE) {
+      onToken?.(char);
       yield char;
-      // Small delay for natural feel
-      if (char === '\n') await new Promise((r) => setTimeout(r, 10));
     }
+    onStatus?.('완료');
     return;
   }
 
-  onStatus?.('모델 초기화 중...');
+  if (topScore >= HIGH_CONFIDENCE) {
+    // HIGH: 직접 FAQ 반환 (LLM 호출 없음)
+    onStatus?.('답변 반환 중...');
+    const directAnswer = formatDirectAnswer(results[0]);
+    for (const char of directAnswer) {
+      onToken?.(char);
+      yield char;
+    }
+    onStatus?.('완료');
+    return;
+  }
+
+  // MEDIUM: LLM에 FAQ 컨텍스트 전달하여 종합 답변 생성
+  onStatus?.('답변 작성 중...');
 
   const model = new ChatOpenAI({
     model: process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini',
@@ -194,58 +105,25 @@ export async function* chat(
     streaming: true,
   });
 
-  const searchTool = createSearchFaqTool(onStatus);
-  const orderTool = createCheckOrderStatusTool(onStatus);
-  const modelWithTools = model.bindTools([searchTool, orderTool]);
+  const faqContext = results
+    .map((r, i) => `[${i + 1}] Q: ${r.question}\nA: ${r.answer}`)
+    .join('\n\n');
 
-  const messages: BaseMessage[] = [new SystemMessage(SYSTEM_PROMPT), new HumanMessage(userMessage)];
+  const messages: BaseMessage[] = [
+    new SystemMessage(SYSTEM_PROMPT),
+    new HumanMessage(
+      `아래 FAQ 검색 결과를 바탕으로 사용자 질문에 답변해주세요.\n\n` +
+      `사용자 질문: ${userMessage}\n\n` +
+      `FAQ 검색 결과:\n${faqContext}`
+    ),
+  ];
 
-  onStatus?.('응답 생성 중...');
-
-  // First call - may include tool calls
-  const response = await modelWithTools.invoke(messages);
-
-  // Check if tool calls are needed
-  if (response.tool_calls && response.tool_calls.length > 0) {
-    messages.push(response as BaseMessage);
-
-    // Execute tool calls
-    for (const toolCall of response.tool_calls) {
-      let toolResult: string;
-      if (toolCall.name === 'search_faq') {
-        toolResult = await searchTool.invoke(toolCall.args);
-      } else if (toolCall.name === 'check_order_status') {
-        toolResult = await orderTool.invoke(toolCall.args);
-      } else {
-        toolResult = 'Unknown tool';
-      }
-      messages.push({
-        role: 'tool',
-        content: toolResult,
-        tool_call_id: toolCall.id,
-      } as any);
-    }
-
-    onStatus?.('답변 작성 중...');
-
-    // Final response with tool results - stream it
-    const finalStream = await model.stream(messages);
-
-    for await (const chunk of finalStream) {
-      const content = chunk.content;
-      if (typeof content === 'string' && content) {
-        onToken?.(content);
-        yield content;
-      }
-    }
-  } else {
-    // No tool calls, stream directly
-    const content = response.content;
-    if (typeof content === 'string') {
-      for (const char of content) {
-        onToken?.(char);
-        yield char;
-      }
+  const stream = await model.stream(messages);
+  for await (const chunk of stream) {
+    const content = chunk.content;
+    if (typeof content === 'string' && content) {
+      onToken?.(content);
+      yield content;
     }
   }
 
@@ -260,8 +138,10 @@ export interface ChatWithEventsOptions {
 
 /**
  * Enhanced chat function that yields structured events for SSE streaming.
- * Includes FAQ results, status updates, and suggested actions.
- * Supports multi-turn conversation with history.
+ * Score-based routing:
+ *   - HIGH (>0.8): 직접 FAQ answer 반환, LLM 호출 없음
+ *   - MEDIUM (0.3~0.8): LLM이 FAQ 컨텍스트로 종합 답변 생성
+ *   - LOW (<0.3): 범위 외 안내 메시지 반환, LLM 호출 없음
  */
 export async function* chatWithEvents(
   userMessage: string,
@@ -269,39 +149,47 @@ export async function* chatWithEvents(
 ): AsyncGenerator<ChatEvent, void, unknown> {
   const { history = [] } = options;
 
-  yield { type: 'status', status: '질문 분석 중...', level: 'loading' };
+  yield { type: 'status', status: 'FAQ 검색 중...', level: 'loading' };
 
-  // Check if message contains order number pattern (skip guard for order queries)
-  const orderPattern = /(?:주문|조회|배송|상태).*\d{8,}/i;
-  const hasOrderNumber = orderPattern.test(userMessage) || /\d{10,}/.test(userMessage);
+  // Step 1: 하이브리드 검색 (FTS5 + sqlite-vec + RRF)
+  const results = await searchFaq(userMessage, { topK: 5, minScore: LOW_CONFIDENCE });
+  const topScore = results[0]?.similarity ?? 0;
 
-  if (hasOrderNumber) {
-    console.log(`[Guard] Order number detected, skipping guard`);
-  }
+  console.log(
+    `[Chat] Query: "${userMessage}" | Top score: ${topScore.toFixed(3)} | Results: ${results.length}`
+  );
 
-  // Guard Pre-filter (skip if order number detected)
-  const preCheck = await searchFaq(userMessage, { topK: 1, minScore: 0 });
-  const bestScore = preCheck[0]?.similarity ?? 0;
+  // ─── LOW: 범위 외 ─────────────────────────────────
+  if (topScore < LOW_CONFIDENCE || results.length === 0) {
+    logAnalyticsEvent({
+      eventType: 'guard_rejected',
+      metadata: { query: userMessage, score: topScore },
+    });
 
-  console.log(`[Guard] Query: "${userMessage}", Best score: ${bestScore.toFixed(3)}`);
-
-  if (bestScore < GUARD_THRESHOLD && !hasOrderNumber) {
-    console.log(`[Guard] Below threshold (${GUARD_THRESHOLD}), returning guard message`);
-    yield { type: 'status', status: 'FAQ 범위 확인', level: 'info' };
-    yield { type: 'text', content: GUARD_MESSAGE };
-    yield {
-      type: 'action',
-      actions: [
-        { label: '정산 관련 질문', query: '정산은 언제 되나요?' },
-        { label: '상품 등록 방법', query: '상품 등록은 어떻게 하나요?' },
-        { label: '배송비 설정', query: '배송비는 어떻게 설정하나요?' },
-      ],
-    };
+    yield { type: 'status', status: '범위 외 질문', level: 'info' };
+    yield { type: 'text', content: OUT_OF_SCOPE_MESSAGE };
     yield { type: 'status', status: '완료', level: 'success' };
     return;
   }
 
-  yield { type: 'status', status: '모델 초기화 중...', level: 'loading' };
+  // Emit FAQ results
+  yield { type: 'faq', results };
+
+  // ─── HIGH: 직접 반환 ──────────────────────────────
+  if (topScore >= HIGH_CONFIDENCE) {
+    yield { type: 'status', status: '답변 반환 중...', level: 'loading' };
+
+    const directAnswer = formatDirectAnswer(results[0]);
+    yield { type: 'text', content: directAnswer };
+
+    emitSourcesAndActions(results, userMessage);
+    yield* emitTrailingEvents(results, userMessage);
+    yield { type: 'status', status: '완료', level: 'success' };
+    return;
+  }
+
+  // ─── MEDIUM: LLM 종합 답변 ────────────────────────
+  yield { type: 'status', status: '답변 작성 중...', level: 'loading' };
 
   const model = new ChatOpenAI({
     model: process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini',
@@ -311,128 +199,65 @@ export async function* chatWithEvents(
     streaming: true,
   });
 
-  // Capture FAQ results from tool execution
-  let faqResults: FaqSearchResult[] = [];
-
-  const searchToolWithCapture = tool(
-    async ({ query }) => {
-      console.log(`[searchFaq] Query: "${query}"`);
-
-      const results = await searchFaq(query, {
-        category: undefined,
-        topK: 5,
-        minScore: 0.3,
-      });
-
-      console.log(`[searchFaq] Found ${results.length} results`);
-      faqResults = results; // Capture for later emission
-
-      if (results.length === 0) {
-        return '관련 FAQ를 찾지 못했습니다.';
-      }
-
-      return results
-        .map((r, i) => `[${i + 1}] Q: ${r.question}\nA: ${r.answer}`)
-        .join('\n\n');
-    },
-    {
-      name: 'search_faq',
-      description:
-        '스마트스토어 FAQ를 검색합니다. 상품관리, 정산, 배송, 주문관리, 고객응대, 프로모션 등 관련 질문에 사용하세요.',
-      schema: z.object({
-        query: z.string().describe('검색할 질문 또는 키워드 (자연어로 입력)'),
-      }),
-    }
-  );
-
-  const orderToolWithCapture = createCheckOrderStatusTool();
-
-  const modelWithTools = model.bindTools([searchToolWithCapture, orderToolWithCapture]);
+  const faqContext = results
+    .map((r, i) => `[${i + 1}] Q: ${r.question}\nA: ${r.answer}`)
+    .join('\n\n');
 
   // Build messages with history
   const messages: BaseMessage[] = [new SystemMessage(SYSTEM_PROMPT)];
 
-  // Add conversation history
   for (const msg of history) {
     if (msg.role === 'user') {
       messages.push(new HumanMessage(msg.content));
     } else if (msg.role === 'assistant') {
       messages.push(new AIMessage(msg.content));
     }
-    // system messages are ignored in history (only one system prompt)
   }
 
-  // Add current user message
-  messages.push(new HumanMessage(userMessage));
+  messages.push(
+    new HumanMessage(
+      `아래 FAQ 검색 결과를 바탕으로 사용자 질문에 답변해주세요.\n\n` +
+      `사용자 질문: ${userMessage}\n\n` +
+      `FAQ 검색 결과:\n${faqContext}`
+    )
+  );
 
   if (history.length > 0) {
     console.log(`[Chat] Including ${history.length} history messages`);
   }
 
-  yield { type: 'status', status: '응답 생성 중...', level: 'loading' };
-
-  const response = await modelWithTools.invoke(messages);
-
-  if (response.tool_calls && response.tool_calls.length > 0) {
-    messages.push(response as BaseMessage);
-
-    for (const toolCall of response.tool_calls) {
-      let toolResult: string;
-      if (toolCall.name === 'search_faq') {
-        yield { type: 'status', status: 'FAQ 검색 중...', level: 'loading' };
-        toolResult = await searchToolWithCapture.invoke(toolCall.args);
-      } else if (toolCall.name === 'check_order_status') {
-        yield { type: 'status', status: '주문 조회 중...', level: 'loading' };
-        toolResult = await orderToolWithCapture.invoke(toolCall.args);
-      } else {
-        toolResult = 'Unknown tool';
-      }
-      messages.push({
-        role: 'tool',
-        content: toolResult,
-        tool_call_id: toolCall.id,
-      } as any);
-    }
-
-    // Emit FAQ results as widget data
-    if (faqResults.length > 0) {
-      yield { type: 'faq', results: faqResults };
-      yield {
-        type: 'source',
-        sources: faqResults.slice(0, 3).map((r) => ({
-          title: r.question,
-          category: r.category,
-        })),
-      };
-    }
-
-    yield { type: 'status', status: '답변 작성 중...', level: 'loading' };
-
-    const finalStream = await model.stream(messages);
-
-    for await (const chunk of finalStream) {
-      const content = chunk.content;
-      if (typeof content === 'string' && content) {
-        yield { type: 'text', content };
-      }
-    }
-  } else {
-    const content = response.content;
-    if (typeof content === 'string') {
+  const stream = await model.stream(messages);
+  for await (const chunk of stream) {
+    const content = chunk.content;
+    if (typeof content === 'string' && content) {
       yield { type: 'text', content };
     }
   }
 
-  // Emit sources (referenced FAQs)
-  if (faqResults.length > 0) {
-    const sources = faqResults.slice(0, 3).map((r) => ({
+  yield* emitTrailingEvents(results, userMessage);
+  yield { type: 'status', status: '완료', level: 'success' };
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────
+
+/** 고신뢰도 FAQ를 사용자 친화적으로 포맷 */
+function formatDirectAnswer(faq: FaqSearchResult): string {
+  return faq.answer;
+}
+
+/** 출처 + 관련 질문 이벤트 생성 */
+async function* emitTrailingEvents(
+  results: FaqSearchResult[],
+  userMessage: string
+): AsyncGenerator<ChatEvent, void, unknown> {
+  if (results.length > 0) {
+    const sources = results.slice(0, 1).map((r) => ({
       title: r.question,
       category: r.category,
     }));
     yield { type: 'source', sources };
 
-    // Suggest related questions (exclude the first one used for answer)
-    const relatedQuestions = faqResults
+    const relatedQuestions = results
       .slice(1, 4)
       .filter((r) => r.question !== userMessage)
       .map((r) => ({ label: r.question.slice(0, 30), query: r.question }));
@@ -441,6 +266,14 @@ export async function* chatWithEvents(
       yield { type: 'action', actions: relatedQuestions };
     }
   }
+}
 
-  yield { type: 'status', status: '완료', level: 'success' };
+/** Analytics 로깅 헬퍼 (non-blocking) */
+function emitSourcesAndActions(results: FaqSearchResult[], userMessage: string): void {
+  if (results.length > 0) {
+    logAnalyticsEvent({
+      eventType: 'faq_accessed',
+      metadata: { faq_id: results[0].id, category: results[0].category },
+    });
+  }
 }
