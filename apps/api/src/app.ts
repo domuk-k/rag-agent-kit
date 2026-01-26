@@ -5,6 +5,7 @@ import { aiSdkRoutes } from './routes/ai-sdk';
 import { chatStreamRoutes } from './routes/chat-stream';
 import { faqRoutes } from './routes/faq';
 import { analyticsRoutes } from './routes/analytics';
+import { feedbackRoutes } from './routes/feedback';
 
 /**
  * Elysia 앱 빌더 (타입 추출용)
@@ -23,7 +24,8 @@ export const createApp = () =>
     .use(aiSdkRoutes)
     .use(chatStreamRoutes)
     .use(faqRoutes)
-    .use(analyticsRoutes);
+    .use(analyticsRoutes)
+    .use(feedbackRoutes);
 
 /** API 앱 타입 (Eden Treaty 클라이언트용) */
 export type App = ReturnType<typeof createApp>;

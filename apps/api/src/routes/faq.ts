@@ -102,7 +102,7 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       const faq = createFaq(body);
       console.log(`[FAQ] Created: ${faq.id} - ${faq.question}`);
 
-      // Qdrant에 벡터 추가
+      // faq_vec에 벡터 추가
       try {
         await upsertFaqItems([faq]);
         console.log(`[FAQ] Vector indexed: ${faq.id}`);
@@ -143,7 +143,7 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       }
       console.log(`[FAQ] Updated: ${faq.id} - ${faq.question}`);
 
-      // Qdrant 벡터 업데이트
+      // faq_vec 벡터 업데이트
       try {
         await upsertFaqItems([faq]);
         console.log(`[FAQ] Vector updated: ${faq.id}`);
@@ -188,7 +188,7 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       }
       console.log(`[FAQ] Deleted: ${id}`);
 
-      // Qdrant에서 벡터 삭제
+      // faq_vec에서 벡터 삭제
       try {
         await deleteFaqFromVector(id);
         console.log(`[FAQ] Vector deleted: ${id}`);
@@ -273,7 +273,7 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
 
       try {
         await upsertFaqItems(newFaqs);
-        console.log(`[FAQ] Bulk indexed ${insertedCount} items to Qdrant`);
+        console.log(`[FAQ] Bulk indexed ${insertedCount} items to faq_vec`);
       } catch (error) {
         console.error(`[FAQ] Bulk indexing failed:`, error);
       }
