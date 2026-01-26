@@ -1,4 +1,3 @@
-import { memo } from 'react';
 import type { Message as AIMessage } from '@ai-sdk/react';
 import { Copy, Check, ThumbsUp, ThumbsDown } from 'lucide-react';
 import {
@@ -90,7 +89,9 @@ interface MessageItemProps {
   feedback?: FeedbackActions;
 }
 
-const MessageItem = memo(function MessageItem({
+// Not using memo: AI SDK mutates message objects in-place when annotations arrive
+// via 8: protocol, so shallow comparison always sees the same reference and bails out.
+function MessageItem({
   message,
   onRelatedQuestionClick,
   isLoading,
@@ -219,4 +220,4 @@ const MessageItem = memo(function MessageItem({
       )}
     </Message>
   );
-});
+}
