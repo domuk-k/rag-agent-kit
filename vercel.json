@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "bun install && cd apps/web && bun run build",
-  "outputDirectory": "apps/web/dist",
+  "buildCommand": "bun install && cd apps/rag-agent-web && bun run build",
+  "outputDirectory": "apps/rag-agent-web/dist",
   "framework": "vite",
   "installCommand": "bun install"
 }

@@ -1,4 +1,4 @@
-# Pinecone is a managed service - no local containers needed
-# This file is kept for potential future services (e.g., local dev databases)
+# SQLite + sqlite-vec는 로컬 파일 기반 — 별도 컨테이너 불필요
+# 향후 서비스 추가 시 사용
 
 services: {}
