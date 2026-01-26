@@ -1,0 +1,73 @@
+/* Tiptap Editor Styles */
+@reference "../index.css";
+
+.tiptap-editor {
+  @apply min-h-[60px] max-h-[200px] overflow-y-auto;
+  @apply px-3 py-2 text-sm;
+  @apply focus:outline-none;
+}
+
+/* Placeholder */
+.tiptap-editor p.is-editor-empty:first-child::before {
+  @apply text-muted-foreground pointer-events-none float-left h-0;
+  content: attr(data-placeholder);
+}
+
+/* Basic typography */
+.tiptap-editor p {
+  @apply my-1;
+}
+
+.tiptap-editor p:first-child {
+  @apply mt-0;
+}
+
+.tiptap-editor p:last-child {
+  @apply mb-0;
+}
+
+/* Inline code */
+.tiptap-editor code {
+  @apply rounded bg-muted px-1.5 py-0.5 font-mono text-sm;
+}
+
+/* Code blocks */
+.tiptap-editor pre {
+  @apply my-2 rounded-lg bg-muted p-3 font-mono text-sm;
+}
+
+.tiptap-editor pre code {
+  @apply bg-transparent p-0;
+}
+
+/* Lists */
+.tiptap-editor ul,
+.tiptap-editor ol {
+  @apply my-1 pl-6;
+}
+
+.tiptap-editor ul {
+  @apply list-disc;
+}
+
+.tiptap-editor ol {
+  @apply list-decimal;
+}
+
+.tiptap-editor li {
+  @apply my-0.5;
+}
+
+/* Blockquote */
+.tiptap-editor blockquote {
+  @apply my-2 border-l-4 border-muted-foreground/30 pl-4 italic;
+}
+
+/* Bold & Italic */
+.tiptap-editor strong {
+  @apply font-semibold;
+}
+
+.tiptap-editor em {
+  @apply italic;
+}
