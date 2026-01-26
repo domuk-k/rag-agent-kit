@@ -1,267 +1,210 @@
 # RAG Agent Kit Architecture
 
-온라인 교육 플랫폼 FAQ 챗봇 - RAG 기반 멀티턴 대화 시스템
+온라인 교육 플랫폼 FAQ 챗봇 — 하이브리드 검색 + 점수 기반 라우팅
 
-## Project Structure
+---
+
+## 핵심 동작 흐름
+
+사용자 메시지가 응답으로 바뀌기까지의 전체 경로.
+
+### 1. HTTP 진입 — `apps/api/src/routes/chat-stream.ts`
 
 ```
-rag-agent-kit/
-├── apps/
-│   └── api/                 # Elysia API 서버
-│       └── src/routes/
-│           ├── chat-stream.ts   # SSE 채팅 스트리밍
-│           ├── ai-sdk.ts        # Vercel AI SDK 호환 엔드포인트
-│           ├── faq.ts           # FAQ CRUD
-│           ├── analytics.ts     # 분석 API
-│           └── health.ts        # 헬스체크
+클라이언트 POST /api/chat/stream
+  { messages: [...], sessionId?: string }
+```
+
+1. 세션이 없으면 자동 생성 (`sess_{timestamp}_{random}`)
+2. 사용자 메시지를 DB에 저장
+3. 세션의 최근 20개 메시지를 히스토리로 로드
+4. `chatWithEvents(userMessage, { history })` 호출 — **여기서 에이전트 패키지로 진입**
+5. 반환되는 `AsyncGenerator<ChatEvent>`를 SSE 이벤트로 변환하며 스트리밍
+6. 스트리밍 완료 후 어시스턴트 응답을 DB에 저장
+
+### 2. 하이브리드 검색 — `packages/vector/src/search.ts`
+
+에이전트가 가장 먼저 실행하는 단계. 두 가지 검색을 병렬로 수행한 뒤 병합.
+
+```
+사용자 질문: "수강 취소는 어떻게 하나요?"
+          │
+          ├──→ FTS5 BM25 키워드 검색 (로컬, <1ms)
+          │    "수강" "취소" → faq_fts MATCH → rowid + bm25 순위
+          │
+          └──→ OpenAI 임베딩 (text-embedding-3-small, 512차원)
+               → sqlite-vec 코사인 거리 검색 (로컬, <5ms)
+               → rowid + distance 순위
+          │
+          ▼
+    Reciprocal Rank Fusion (k=60)
+    ─────────────────────────────
+    양쪽 순위를 RRF 공식으로 합산.
+    두 검색에 모두 등장하는 항목일수록 높은 점수.
+    FTS5-only 매칭은 기본 유사도 0.4 부여.
+    벡터 매칭은 cosine distance → similarity 변환 (1 - distance).
+          │
+          ▼
+    RRF 점수 순 정렬 → topK(5)개 → minScore 필터 → FaqSearchResult[]
+```
+
+**핵심 파일**:
+- `search.ts:searchFaq()` — 전체 파이프라인 오케스트레이션
+- `search.ts:ftsSearch()` — FTS5 BM25 쿼리 (`faq_fts MATCH`)
+- `search.ts:vecSearch()` — sqlite-vec 코사인 거리 (`faq_vec MATCH`)
+- `search.ts:reciprocalRankFusion()` — 두 결과 병합
+- `embeddings.ts:getEmbedding()` — OpenAI API 호출
+
+### 3. 점수 기반 라우팅 — `packages/agents/src/langchain-agent.ts`
+
+검색 결과의 **최고 유사도 점수(topScore)**로 2가지 경로 중 하나를 선택. LLM 호출 없음.
+
+```
+topScore = results[0].similarity
+          │
+          ├── ≥ 0.5 (HIGH) ────────────────────────────────────────┐
+          │   매칭된 FAQ                                            │
+          │   • results[0].answer 그대로 반환                        │
+          │   • + faq 이벤트 (참고 FAQ 카드)                         │
+          │   • + source 이벤트 (출처)                               │
+          │   • + action 이벤트 (추천 질문 최대 3개)                   │
+          │   • <50ms 응답                                          │
+          │                                                         │
+          └── < 0.5 (LOW) ─────────────────────────────────────────┐│
+              범위 외 질문으로 판단                                    ││
+              • analytics_events에 guard_rejected 기록               ││
+              • 고정 안내 메시지 반환 (학습지원센터 연락처)               ││
+              └───────────────────────────────────────────────────┘│
+                                                                   │
+              모든 경로는 ChatEvent 제너레이터로 반환 ◀────────────────┘
+```
+
+### 4. SSE 이벤트 스트리밍 — 클라이언트 수신
+
+에이전트가 yield하는 `ChatEvent`가 SSE로 변환되어 클라이언트에 전달되는 순서:
+
+```
+① status  {"status":"FAQ 검색 중...", "level":"loading"}
+② status  {"status":"답변 반환 중...", "level":"loading"}
+③ text    {"content":"수강 취소는..."}
+④ faq     {"results":[...]}                                 ← 유사도 ≥ 0.2인 참고 FAQ
+⑤ source  {"sources":[{"title":"...", "category":"..."}]}   ← 최상위 매칭 FAQ 출처
+⑥ action  {"actions":[{"label":"...", "query":"..."}]}      ← 추천 질문 (최대 3개)
+⑦ status  {"status":"완료", "level":"success"}
+⑧ done    {}
+```
+
+**타입 정의**: `packages/shared/src/index.ts`의 `SSEEvent` discriminated union.
+
+---
+
+## 전체 요청-응답 시퀀스
+
+```
+Browser (React)                    API (Elysia)                    Agent                        Search
+    │                                  │                              │                            │
+    │  POST /api/chat/stream           │                              │                            │
+    │  {messages, sessionId}           │                              │                            │
+    │─────────────────────────────────▶│                              │                            │
+    │                                  │ 세션 조회/생성                 │                            │
+    │                                  │ 메시지 DB 저장                │                            │
+    │                                  │ 히스토리 로드 (최근 20개)      │                            │
+    │                                  │                              │                            │
+    │                                  │ chatWithEvents(msg, {history})│                            │
+    │                                  │─────────────────────────────▶│                            │
+    │                                  │                              │ searchFaq(query)            │
+    │                                  │                              │────────────────────────────▶│
+    │                                  │                              │                            │ FTS5 + 벡터 + RRF
+    │                                  │                              │◀────────────────────────────│
+    │                                  │                              │                            │
+    │                                  │                              │ 점수 분기                    │
+    │                                  │                              │ ≥0.5: FAQ 직접 반환          │
+    │                                  │                              │ <0.5: 범위 외 안내           │
+    │                                  │                              │                            │
+    │  ◀─ SSE: status, text, faq,      │◀─ ChatEvent yield ───────────│                            │
+    │         source, action, done     │                              │                            │
+    │                                  │ 어시스턴트 응답 DB 저장        │                            │
+    │                                  │                              │                            │
+```
+
+---
+
+## 프로젝트 구조
+
+```
+apps/
+├── api/                     # Elysia 백엔드
+│   └── src/routes/
+│       ├── chat-stream.ts       # SSE 채팅 + 세션 관리
+│       ├── ai-sdk.ts            # Vercel AI SDK 호환 엔드포인트
+│       ├── faq.ts               # FAQ CRUD (ADMIN_TOKEN 인증)
+│       ├── analytics.ts         # 분석 API
+│       └── health.ts            # 헬스체크
 │
-├── packages/
-│   ├── agents/              # LangChain 에이전트
-│   │   └── src/
-│   │       └── langchain-agent.ts
-│   │
-│   ├── db/                  # SQLite 데이터베이스
-│   │   └── src/index.ts
-│   │
-│   ├── vector/              # Qdrant 벡터 검색
-│   │   └── src/
-│   │       ├── client.ts        # Qdrant 클라이언트
-│   │       ├── embeddings.ts    # OpenAI 임베딩
-│   │       ├── search.ts        # 벡터 검색
-│   │       └── upsert.ts        # 벡터 업서트
-│   │
-│   ├── shared/              # 공통 타입
-│   │   └── src/index.ts
-│   │
-│   └── protocol/            # Eden Treaty API 계약
+└── rag-agent-web/           # React 19 프론트엔드
+    └── src/
+        ├── components/chat/     # ChatContainer, MessageContainer, ChatInput
+        ├── hooks/               # use-chat-extended, use-admin, use-feedback
+        ├── stores/              # Zustand (conversation, hitl, theme)
+        └── pages/               # Admin, Conversations
+
+packages/
+├── agents/                  # 점수 기반 라우팅 에이전트
+│   └── src/
+│       ├── langchain-agent.ts   # chat(), chatWithEvents() — 핵심 로직
+│       └── index.ts             # re-export
 │
-└── data/
-    ├── faq.json             # FAQ 시드 데이터
-    └── faq.db               # SQLite DB 파일
+├── db/                      # SQLite (Bun 네이티브)
+│   └── src/index.ts             # 스키마, CRUD, 세션, 분석 이벤트
+│
+├── vector/                  # 하이브리드 검색
+│   └── src/
+│       ├── search.ts            # searchFaq() — FTS5 + sqlite-vec + RRF
+│       └── embeddings.ts        # OpenAI 임베딩 API
+│
+├── protocol/                # Eden Treaty 타입 안전 API 계약
+└── shared/                  # 공통 타입 (FaqItem, SSEEvent, ChatMessage)
 ```
 
 ## Database Schema
 
-SQLite (Bun 네이티브) - `packages/db/src/index.ts`
+SQLite (Bun 네이티브) — `packages/db/src/index.ts`
 
-### Tables
-
-#### `faq` - FAQ 데이터
-| Column | Type | Description |
-|--------|------|-------------|
-| id | INTEGER | PK, 자동증가 |
-| category | TEXT | 카테고리 (일반, 시험/과제, 학습진도, 로그인, 동영상, 도서) |
-| subcategory | TEXT | 서브카테고리 (nullable) |
-| question | TEXT | 질문 |
-| answer | TEXT | 답변 |
-| created_at | TEXT | 생성일시 |
-| updated_at | TEXT | 수정일시 |
-
-#### `sessions` - 대화 세션
-| Column | Type | Description |
-|--------|------|-------------|
-| id | TEXT | PK, `sess_{timestamp}_{random}` 형식 |
-| created_at | INTEGER | 생성 타임스탬프 (ms) |
-| updated_at | INTEGER | 마지막 활동 타임스탬프 (ms) |
-| metadata | TEXT | JSON 메타데이터 (nullable) |
-
-#### `messages` - 대화 메시지
-| Column | Type | Description |
-|--------|------|-------------|
-| id | INTEGER | PK, 자동증가 |
-| session_id | TEXT | FK → sessions.id |
-| role | TEXT | 'user' \| 'assistant' \| 'system' |
-| content | TEXT | 메시지 내용 |
-| timestamp | INTEGER | 타임스탬프 (ms) |
-
-#### `analytics_events` - 분석 이벤트
-| Column | Type | Description |
-|--------|------|-------------|
-| id | INTEGER | PK, 자동증가 |
-| event_type | TEXT | 이벤트 타입 |
-| session_id | TEXT | FK → sessions.id (nullable) |
-| timestamp | INTEGER | 타임스탬프 (ms) |
-| metadata | TEXT | JSON 메타데이터 |
-
-**Event Types:**
-- `session_created` - 세션 생성
-- `session_deleted` - 세션 삭제
-- `faq_accessed` - FAQ 조회 (metadata: faq_id, category)
-- `faq_created` - FAQ 생성
-- `faq_updated` - FAQ 수정
-- `faq_deleted` - FAQ 삭제
-- `guard_rejected` - Guard 거부 (metadata: query, score)
+| 테이블 | 용도 |
+|--------|------|
+| `faq` | FAQ 데이터 (id, category, subcategory, question, answer) |
+| `faq_fts` | FTS5 가상 테이블 — INSERT/UPDATE/DELETE 트리거로 자동 동기화 |
+| `faq_vec` | sqlite-vec 임베딩 저장 (rowid → Float32 벡터, 512차원) |
+| `sessions` | 대화 세션 (id: `sess_{ts}_{rand}`, created_at, updated_at) |
+| `messages` | 세션별 메시지 (FK → sessions.id, role, content, timestamp) |
+| `analytics_events` | 이벤트 로그 (faq_accessed, guard_rejected 등) |
 
 ## API Endpoints
 
-Base URL: `http://localhost:3333`
-
-### Chat
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/chat/stream` | SSE 채팅 스트리밍 (메인) |
-| POST | `/api/chat` | 단순 텍스트 스트리밍 |
-| POST | `/api/chat/ai-sdk` | Vercel AI SDK Data Stream Protocol |
-
-#### POST /api/chat/stream
-
-**Request:**
-```json
-{
-  "messages": [
-    { "role": "user", "content": "수강 취소는 어떻게 하나요?" }
-  ],
-  "sessionId": "sess_xxx" // optional
-}
-```
-
-**Response (SSE):**
-```
-event: status
-data: {"type":"status","status":"session:sess_xxx","level":"info"}
-
-event: faq
-data: {"type":"faq","results":[...]}
-
-event: text
-data: {"type":"text","content":"안녕하세요..."}
-
-event: source
-data: {"type":"source","sources":[{"title":"...", "category":"..."}]}
-
-event: done
-data: {"type":"done"}
-```
-
-### FAQ CRUD
+Base URL: `http://localhost:8080`
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/faq` | - | 전체 FAQ 조회 |
-| GET | `/api/faq/:id` | - | 단일 FAQ 조회 |
-| POST | `/api/faq` | ADMIN_TOKEN | FAQ 생성 |
-| PUT | `/api/faq/:id` | ADMIN_TOKEN | FAQ 수정 |
-| DELETE | `/api/faq/:id` | ADMIN_TOKEN | FAQ 삭제 |
-| POST | `/api/faq/reindex` | ADMIN_TOKEN | 벡터 재인덱싱 |
-| POST | `/api/faq/reset` | ADMIN_TOKEN | 전체 리셋 + 재시딩 |
-
-**Auth Header:**
-```
-Authorization: Bearer {ADMIN_TOKEN}
-```
-
-### Analytics
-
-| Method | Path | Query Params | Description |
-|--------|------|--------------|-------------|
-| GET | `/api/analytics/popular-questions` | limit, days | 인기 질문 |
-| GET | `/api/analytics/daily-usage` | days | 일별 사용량 |
-| GET | `/api/analytics/category-breakdown` | days | 카테고리별 통계 |
-| GET | `/api/analytics/guard-rejections` | days | Guard 거부 로그 |
-
-### Session
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/session` | 세션 생성 |
-| GET | `/api/session/:id` | 세션 조회 |
-| DELETE | `/api/session/:id` | 세션 삭제 |
-
-## Session Management
-
-### 세션 생성
-- 클라이언트가 `sessionId`를 제공하지 않으면 자동 생성
-- 형식: `sess_{timestamp(base36)}_{random(7자)}`
-- 예: `sess_mkqn447z_755jujm`
-
-### 세션 유지
-- 매 메시지마다 `updated_at` 갱신
-- 최근 20개 메시지만 컨텍스트로 사용
-
-### 세션 정리
-- 30분마다 백그라운드 정리 실행
-- 1시간 미활동 세션 자동 삭제
-
-```typescript
-// 정리 로직
-const SESSION_TTL = 60 * 60 * 1000; // 1시간
-const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30분
-
-setInterval(() => {
-  const deleted = cleanupSessions(SESSION_TTL);
-  console.log(`[Cleanup] Deleted ${deleted} stale sessions`);
-}, CLEANUP_INTERVAL);
-```
-
-## Vector Search
-
-Qdrant + OpenAI Embeddings
-
-### 설정
-- **Collection**: `faq` (환경변수: `QDRANT_COLLECTION`)
-- **Embedding Model**: `text-embedding-3-small`
-- **Dimensions**: 1536
-- **Distance**: Cosine
-
-### 검색 파라미터
-- `topK`: 5 (기본값)
-- `minScore`: 0.3 (유사도 임계값)
-
-### 데이터 흐름
-```
-User Query
-    ↓
-OpenAI Embedding (1536 dims)
-    ↓
-Qdrant Vector Search
-    ↓
-FAQ Results (similarity score)
-    ↓
-LangChain Agent
-    ↓
-Streaming Response
-```
-
-## Agent Architecture
-
-`packages/agents/src/langchain-agent.ts`
-
-### 구성요소
-- **LLM**: OpenRouter → Gemini 2.5 Flash Lite
-- **Tools**: `search_faq` (Qdrant 벡터 검색)
-- **Streaming**: Token-by-token SSE
-
-### SYSTEM_PROMPT 핵심 규칙
-1. FAQ 원문의 모든 정보를 빠짐없이 포함
-2. 구성 재배치, 말투 변경은 허용
-3. 검색 결과 없으면 학습지원센터 안내
-
-### 이벤트 타입 (ChatEvent)
-```typescript
-type ChatEvent =
-  | { type: 'text'; content: string }
-  | { type: 'status'; status: string; level: 'info' | 'loading' | 'success' | 'error' }
-  | { type: 'faq'; results: FaqSearchResult[] }
-  | { type: 'action'; actions: { label: string; query: string }[] }
-  | { type: 'source'; sources: { title: string; url?: string; category: string }[] };
-```
+| POST | `/api/chat/stream` | - | SSE 채팅 스트리밍 (메인) |
+| POST | `/api/chat` | - | 단순 텍스트 스트리밍 |
+| POST | `/api/chat/ai-sdk` | - | Vercel AI SDK Data Stream Protocol |
+| POST | `/api/session` | - | 세션 생성 |
+| DELETE | `/api/session/:id` | - | 세션 삭제 |
+| GET | `/api/faq` | - | FAQ 목록 |
+| POST | `/api/faq` | Bearer | FAQ 생성 |
+| PUT | `/api/faq/:id` | Bearer | FAQ 수정 |
+| DELETE | `/api/faq/:id` | Bearer | FAQ 삭제 |
+| POST | `/api/faq/reindex` | Bearer | FTS5 + 벡터 재인덱싱 |
+| GET | `/api/analytics/*` | - | 인기 질문, 일별 사용량, Guard 거부 로그 |
+| GET | `/health` | - | 헬스체크 |
 
 ## Environment Variables
 
 ```bash
-# LLM
-OPENROUTER_API_KEY=sk-or-v1-xxx
-OPENROUTER_MODEL=google/gemini-2.5-flash-lite
-OPENAI_BASE_URL=https://openrouter.ai/api/v1
-
-# Embedding
-OPENAI_EMBEDDING_API_KEY=sk-proj-xxx
-
-# Vector DB
-QDRANT_URL=http://localhost:6333
-QDRANT_API_KEY=xxx  # Qdrant Cloud용
-QDRANT_COLLECTION=faq
+# Embedding (OpenAI)
+OPENAI_API_KEY=sk-proj-xxx                # 또는 OPENAI_EMBEDDING_API_KEY
+EMBEDDING_MODEL=text-embedding-3-small    # 기본값
+EMBEDDING_DIMENSION=512                   # 기본값
 
 # SQLite
 DB_PATH=data/faq.db
@@ -270,36 +213,5 @@ DB_PATH=data/faq.db
 ADMIN_TOKEN=your-secret-token
 
 # Server
-PORT=3333
-```
-
-## Development Commands
-
-```bash
-# 전체 실행
-bun run dev
-
-# 개별 서비스
-bun run dev:api    # API (localhost:3333)
-
-# 데이터베이스
-docker-compose up -d   # Qdrant 시작
-bun run qdrant:setup   # 컬렉션 초기화
-bun run seed           # FAQ 시딩
-
-# 타입체크
-bun run typecheck
-```
-
-## Deployment (Fly.io)
-
-```bash
-# 배포
-fly deploy
-
-# 시크릿 설정
-fly secrets set KEY=value
-
-# 로그 확인
-fly logs
+PORT=8080
 ```

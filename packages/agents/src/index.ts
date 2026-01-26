@@ -1,4 +1,4 @@
-// @repo/agents - LangChain-based FAQ agent
+// @repo/agents - FAQ search-based agent (no LLM)
 
 export {
   chat,

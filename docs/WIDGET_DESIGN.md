@@ -3,7 +3,7 @@
 ## 현재 구조
 
 ```
-[Client: useChat]  ←→  [Elysia API]  ←→  [LangChain Agent]
+[Client: useChat]  ←→  [Elysia API]  ←→  [Search Agent]
      text/plain streaming (generator)
 ```
 

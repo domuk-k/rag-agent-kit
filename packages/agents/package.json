@@ -8,11 +8,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@langchain/core": "^1.1.13",
-    "@langchain/openai": "^1.2.2",
     "@repo/db": "workspace:*",
     "@repo/shared": "workspace:*",
-    "@repo/vector": "workspace:*",
-    "langfuse": "^3.38.6"
+    "@repo/vector": "workspace:*"
   }
 }

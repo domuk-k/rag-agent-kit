@@ -19,9 +19,6 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "@langchain/core": "^1.1.13",
-    "@langchain/openai": "^1.2.2",
-    "langchain": "^1.2.8",
     "zod": "^4.3.5"
   }
 }

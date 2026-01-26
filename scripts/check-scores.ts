@@ -21,8 +21,7 @@ for (const q of queries) {
   const top = results[0];
   const score = top ? (top.similarity * 100).toFixed(1) + '%' : 'none';
   const tier = top == null ? 'NONE'
-    : top.similarity >= 0.8 ? 'HIGH'
-    : top.similarity >= 0.3 ? 'MED '
+    : top.similarity >= 0.5 ? 'HIGH'
     : 'LOW ';
   const match = top ? top.question.slice(0, 35) : '-';
   console.log(`${tier} | ${score.padStart(6)} | ${q.padEnd(18)} → ${match}`);
