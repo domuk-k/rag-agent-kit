@@ -87,9 +87,14 @@ const DEFAULT_SUGGESTIONS = [
 function EmptyState({ onQuestionClick }: EmptyStateProps) {
   const { questions, isLoading } = usePopularQuestions(5);
 
-  // API 데이터가 있으면 사용, 없으면 기본값 폴백
-  const suggestions =
-    questions.length > 0 ? questions.map((q) => q.question) : DEFAULT_SUGGESTIONS;
+  // API 데이터 + 기본값으로 항상 5개 보장
+  const suggestions = (() => {
+    const apiQuestions = questions.map((q) => q.question);
+    if (apiQuestions.length >= 5) return apiQuestions.slice(0, 5);
+    if (apiQuestions.length === 0) return DEFAULT_SUGGESTIONS;
+    const fill = DEFAULT_SUGGESTIONS.filter((q) => !apiQuestions.includes(q));
+    return [...apiQuestions, ...fill].slice(0, 5);
+  })();
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">

@@ -12,7 +12,7 @@ interface UseChatExtendedOptions {
 
 export function useChatExtended(options: UseChatExtendedOptions = {}) {
   const { sessionId } = options;
-  const { currentConversationId, addMessage } = useConversationStore();
+  const { currentConversationId, addMessage, chatResetKey } = useConversationStore();
   const { setPendingRequest } = useHITLStore();
 
   const chat = useChat({
@@ -33,6 +33,14 @@ export function useChatExtended(options: UseChatExtendedOptions = {}) {
       console.error('Chat error:', error);
     },
   });
+
+  // 제목/로고 클릭 시 채팅 초기화
+  useEffect(() => {
+    if (chatResetKey > 0) {
+      chat.setMessages([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatResetKey]);
 
   // Handle HITL requests from stream data
   useEffect(() => {

@@ -23,6 +23,8 @@ interface ConversationState {
   messages: Message[];
   isLoading: boolean;
   isInitialized: boolean;
+  /** 채팅 리셋 트리거 — 값이 바뀌면 useChat messages 초기화 */
+  chatResetKey: number;
 
   // Actions
   initialize: () => Promise<void>;
@@ -31,6 +33,8 @@ interface ConversationState {
   deleteConversation: (id: string) => Promise<void>;
   addMessage: (role: 'user' | 'assistant', content: string, data?: unknown[]) => Promise<void>;
   updateConversationTitle: (id: string, title: string) => Promise<void>;
+  /** 새 대화 시작 — 현재 대화를 해제하고 EmptyState로 복귀 */
+  startNewChat: () => void;
 }
 
 export const useConversationStore = create<ConversationState>()((set, get) => ({
@@ -39,6 +43,15 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
   messages: [],
   isLoading: false,
   isInitialized: false,
+  chatResetKey: 0,
+
+  startNewChat: () => {
+    set((state) => ({
+      currentConversationId: null,
+      messages: [],
+      chatResetKey: state.chatResetKey + 1,
+    }));
+  },
 
   initialize: async () => {
     if (get().isInitialized) return;

@@ -1,9 +1,11 @@
 import { Moon, Sun, Monitor, MessageSquare, Settings } from 'lucide-react';
 import { useThemeStore } from '@/stores/theme-store';
+import { useConversationStore } from '@/stores/conversation-store';
 import { cn } from '@/lib/utils';
 
 export function Header() {
   const { theme, setTheme } = useThemeStore();
+  const { startNewChat } = useConversationStore();
 
   const themeOptions = [
     { value: 'light' as const, icon: Sun, label: 'Light' },
@@ -13,9 +15,15 @@ export function Header() {
 
   return (
     <header className="flex h-14 items-center justify-between border-b bg-background px-4">
-      <a href="#/" className="text-lg font-semibold hover:text-primary transition-colors">
+      <button
+        onClick={() => {
+          startNewChat();
+          window.location.hash = '#/';
+        }}
+        className="text-lg font-semibold hover:text-primary transition-colors"
+      >
         FAQ 챗봇
-      </a>
+      </button>
 
       <div className="flex items-center gap-2">
         {/* Navigation buttons */}
