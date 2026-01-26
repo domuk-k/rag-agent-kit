@@ -21,7 +21,8 @@ function formatDataPart(data: unknown[]): string {
 }
 
 function formatMessageAnnotationPart(annotation: unknown): string {
-  return `8:${JSON.stringify(annotation)}\n`;
+  // AI SDK parses 8: as array and spreads into message.annotations
+  return `8:${JSON.stringify([annotation])}\n`;
 }
 
 function formatFinishPart(): string {
