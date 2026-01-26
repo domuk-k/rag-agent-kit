@@ -1,37 +1,22 @@
-import { qdrant, COLLECTION_NAME, EMBEDDING_DIMENSION } from '../client';
+import { getDb, getVectorCount, EMBEDDING_DIMENSION } from '@repo/db';
 
 async function main() {
-  console.log(`[Setup] Creating collection: ${COLLECTION_NAME}`);
+  console.log(`[Setup] Initializing SQLite with FTS5 + sqlite-vec...`);
 
-  // Check if collection exists
-  const collections = await qdrant.getCollections();
-  const exists = collections.collections.some((c) => c.name === COLLECTION_NAME);
+  const db = getDb();
 
-  if (exists) {
-    console.log(`[Setup] Collection "${COLLECTION_NAME}" already exists`);
+  // Verify sqlite-vec is loaded
+  const { vec_version } = db
+    .prepare(`SELECT vec_version() as vec_version`)
+    .get() as { vec_version: string };
 
-    const info = await qdrant.getCollection(COLLECTION_NAME);
-    console.log(`[Setup] Points count: ${info.points_count}`);
-    return;
-  }
+  console.log(`[Setup] sqlite-vec version: ${vec_version}`);
+  console.log(`[Setup] Embedding dimension: ${EMBEDDING_DIMENSION}`);
 
-  // Create collection
-  await qdrant.createCollection(COLLECTION_NAME, {
-    vectors: {
-      size: EMBEDDING_DIMENSION,
-      distance: 'Cosine',
-    },
-    optimizers_config: {
-      indexing_threshold: 20000,
-    },
-    hnsw_config: {
-      m: 16,
-      ef_construct: 100,
-    },
-  });
+  const vecCount = getVectorCount();
+  console.log(`[Setup] Current vectors in faq_vec: ${vecCount}`);
 
-  console.log(`[Setup] Collection created successfully!`);
-  console.log(`[Setup] Vector size: ${EMBEDDING_DIMENSION}, Distance: Cosine`);
+  console.log(`[Setup] Done! Schema is ready.`);
 }
 
 main().catch(console.error);

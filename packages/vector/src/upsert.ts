@@ -1,53 +1,38 @@
-import { COLLECTION_NAME } from './client';
+import { getDb, insertVector, clearAllVectors } from '@repo/db';
 import { getEmbeddings } from './embeddings';
 import type { FaqItem } from '@repo/shared';
 
-const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
-const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
-
-async function upsertToQdrant(collectionName: string, points: unknown[]): Promise<void> {
-  const url = `${QDRANT_URL}/collections/${collectionName}/points?wait=true`;
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(QDRANT_API_KEY ? { 'api-key': QDRANT_API_KEY } : {}),
-    },
-    body: JSON.stringify({ points }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Qdrant upsert failed: ${response.status} ${text}`);
-  }
-}
-
+/**
+ * FAQ 항목들의 임베딩을 생성하여 faq_vec 테이블에 삽입.
+ * FTS5는 faq 테이블 INSERT 트리거로 자동 동기화됨.
+ */
 export async function upsertFaqItems(items: FaqItem[]): Promise<void> {
   console.log(`[Upsert] Generating embeddings for ${items.length} items...`);
 
   const questions = items.map((item) => item.question);
   const embeddings = await getEmbeddings(questions);
 
-  console.log(`[Upsert] Uploading to Qdrant...`);
+  console.log(`[Upsert] Inserting vectors into SQLite faq_vec...`);
 
-  const points = items.map((item, index) => ({
-    id: item.id,
-    vector: embeddings[index],
-    payload: {
-      category: item.category,
-      subcategory: item.subcategory,
-      question: item.question,
-      answer: item.answer,
-    },
-  }));
+  const db = getDb();
+  const insertTransaction = db.transaction(() => {
+    for (let i = 0; i < items.length; i++) {
+      insertVector(items[i].id, new Float32Array(embeddings[i]));
+    }
+  });
 
-  // Batch upsert (100 items per batch)
-  const batchSize = 100;
-  for (let i = 0; i < points.length; i += batchSize) {
-    const batch = points.slice(i, i + batchSize);
-    await upsertToQdrant(COLLECTION_NAME, batch);
-    console.log(`[Upsert] Uploaded ${Math.min(i + batchSize, points.length)}/${points.length}`);
-  }
+  insertTransaction();
+  console.log(`[Upsert] Inserted ${items.length} vectors. Complete!`);
+}
 
-  console.log(`[Upsert] Complete!`);
+/**
+ * 단일 FAQ 벡터 업서트 (생성/수정 시)
+ */
+export async function upsertSingleFaqVector(faq: FaqItem): Promise<void> {
+  const [embedding] = await getEmbeddings([faq.question]);
+  const db = getDb();
+
+  // 기존 벡터 삭제 후 재삽입 (vec0는 UPDATE 미지원)
+  db.prepare(`DELETE FROM faq_vec WHERE rowid = ?`).run(BigInt(faq.id));
+  insertVector(faq.id, new Float32Array(embedding));
 }

@@ -1,33 +1,14 @@
-import { COLLECTION_NAME, EMBEDDING_DIMENSION } from './client';
-
-const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
-const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
+import { getDb, deleteVector, clearAllVectors } from '@repo/db';
 
 /**
- * Delete a FAQ item from Qdrant by its ID
+ * Delete a FAQ item's vector by its ID.
+ * Note: faq 테이블 DELETE 트리거가 faq_vec도 자동 삭제하므로,
+ * faq 테이블에서 먼저 삭제할 경우 이 함수는 별도로 호출할 필요 없음.
  */
 export async function deleteFaqFromVector(faqId: number): Promise<boolean> {
   try {
-    const url = `${QDRANT_URL}/collections/${COLLECTION_NAME}/points/delete`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(QDRANT_API_KEY ? { 'api-key': QDRANT_API_KEY } : {}),
-      },
-      body: JSON.stringify({
-        filter: {
-          must: [{ key: 'id', match: { value: faqId } }],
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Qdrant delete failed: ${response.status} ${text}`);
-    }
-
-    console.log(`[Vector] Deleted FAQ ${faqId} from Qdrant`);
+    deleteVector(faqId);
+    console.log(`[Vector] Deleted FAQ ${faqId} vector`);
     return true;
   } catch (error) {
     console.error(`[Vector] Failed to delete FAQ ${faqId}:`, error);
@@ -36,63 +17,30 @@ export async function deleteFaqFromVector(faqId: number): Promise<boolean> {
 }
 
 /**
- * Reset collection - delete and recreate with proper schema
+ * Delete multiple FAQ vectors
  */
-export async function resetCollection(): Promise<void> {
-  console.log(`[Vector] Resetting collection: ${COLLECTION_NAME}`);
-
-  // Delete collection if exists
-  const deleteUrl = `${QDRANT_URL}/collections/${COLLECTION_NAME}`;
+export async function deleteFaqsFromVector(faqIds: number[]): Promise<number> {
   try {
-    await fetch(deleteUrl, {
-      method: 'DELETE',
-      headers: QDRANT_API_KEY ? { 'api-key': QDRANT_API_KEY } : {},
+    const db = getDb();
+    const deleteStmt = db.prepare(`DELETE FROM faq_vec WHERE rowid = ?`);
+    const deleteAll = db.transaction((ids: number[]) => {
+      for (const id of ids) {
+        deleteStmt.run(BigInt(id));
+      }
     });
-    console.log(`[Vector] Collection deleted`);
-  } catch {
-    console.log(`[Vector] Collection did not exist or delete failed, continuing...`);
+    deleteAll(faqIds);
+    console.log(`[Vector] Deleted ${faqIds.length} FAQ vectors`);
+    return faqIds.length;
+  } catch (error) {
+    console.error(`[Vector] Failed to delete FAQs:`, error);
+    return 0;
   }
-
-  // Create collection with proper schema
-  const createUrl = `${QDRANT_URL}/collections/${COLLECTION_NAME}`;
-  const response = await fetch(createUrl, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(QDRANT_API_KEY ? { 'api-key': QDRANT_API_KEY } : {}),
-    },
-    body: JSON.stringify({
-      vectors: {
-        size: EMBEDDING_DIMENSION,
-        distance: 'Cosine',
-      },
-      optimizers_config: {
-        indexing_threshold: 20000,
-      },
-      hnsw_config: {
-        m: 16,
-        ef_construct: 100,
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Failed to create collection: ${response.status} ${text}`);
-  }
-
-  console.log(`[Vector] Collection recreated with ${EMBEDDING_DIMENSION} dimensions`);
 }
 
 /**
- * Delete multiple FAQ items from Qdrant
+ * Reset all vectors
  */
-export async function deleteFaqsFromVector(faqIds: number[]): Promise<number> {
-  let deleted = 0;
-  for (const id of faqIds) {
-    if (await deleteFaqFromVector(id)) {
-      deleted++;
-    }
-  }
-  return deleted;
+export async function resetCollection(): Promise<void> {
+  clearAllVectors();
+  console.log(`[Vector] All vectors cleared`);
 }

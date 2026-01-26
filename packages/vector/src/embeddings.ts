@@ -1,9 +1,9 @@
-// OpenAI Embedding API
+// OpenAI Embedding API (text-embedding-3-small for cost efficiency)
 const OPENAI_API_KEY = process.env.OPENAI_EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_EMBEDDING_BASE_URL || 'https://api.openai.com/v1';
-const EMBEDDING_MODEL = 'text-embedding-3-small';
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 
-export const EMBEDDING_DIMENSION = 1536; // text-embedding-3-small dimension
+import { EMBEDDING_DIMENSION } from '@repo/db';
 
 interface EmbeddingResponse {
   data: { embedding: number[]; index: number }[];
@@ -20,7 +20,7 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
     throw new Error('OPENAI_API_KEY or OPENAI_EMBEDDING_API_KEY is required for embeddings');
   }
 
-  console.log(`[Embeddings] Generating embeddings for ${texts.length} texts...`);
+  console.log(`[Embeddings] Generating embeddings for ${texts.length} texts (${EMBEDDING_MODEL}, dim=${EMBEDDING_DIMENSION})...`);
 
   const response = await fetch(`${OPENAI_BASE_URL}/embeddings`, {
     method: 'POST',
@@ -31,6 +31,7 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
     body: JSON.stringify({
       model: EMBEDDING_MODEL,
       input: texts,
+      dimensions: EMBEDDING_DIMENSION,
     }),
   });
 
