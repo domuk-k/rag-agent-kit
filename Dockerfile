@@ -1,15 +1,16 @@
 FROM oven/bun:1 AS base
 
-# Copy entire monorepo
 WORKDIR /app
 COPY . .
 
-# Install dependencies at root level
 RUN bun install
-
-# Create data directory for SQLite
 RUN mkdir -p /app/data
 
-WORKDIR /app/apps/api
+# faq.json을 볼륨 마운트와 무관한 위치에 백업
+# (fly.io 볼륨이 /app/data를 덮어쓰므로)
+RUN cp /app/data/faq.json /app/faq-seed.json 2>/dev/null || true
+
+RUN chmod +x /app/entrypoint.sh
+
 EXPOSE 8080
-CMD ["bun", "run", "src/index.ts"]
+CMD ["/app/entrypoint.sh"]
