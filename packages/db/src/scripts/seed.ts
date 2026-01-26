@@ -2,14 +2,23 @@
  * FAQ Database Seed Script
  *
  * JSON 파일에서 FAQ 데이터를 읽어 SQLite에 저장하고,
- * Qdrant에 벡터 인덱싱합니다.
+ * FTS5 인덱스와 sqlite-vec 벡터를 생성합니다.
  *
  * Usage: bun run seed (from project root)
  */
 
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { clearAllFaqs, bulkInsertFaqs, getAllFaqs, getDb, closeDb } from '../index';
+import {
+  resetForSeed,
+  bulkInsertFaqs,
+  getAllFaqs,
+  getDb,
+  closeDb,
+  rebuildFtsIndex,
+  getVectorCount,
+  getFaqCount,
+} from '../index';
 import { upsertFaqItems } from '@repo/vector';
 import type { FaqItem } from '@repo/shared';
 
@@ -44,21 +53,28 @@ async function main() {
   // 1. Load FAQ data from JSON
   const faqData = await loadFaqJson();
 
-  // 2. Initialize DB and clear existing data
-  getDb();
-  const cleared = clearAllFaqs();
+  // 2. Reset DB (drops FTS5/vec/triggers → clears faq → recreates schema)
+  const cleared = resetForSeed();
   console.log(`[Seed] Cleared ${cleared} existing FAQs from SQLite`);
 
-  // 3. Insert into SQLite
+  // 3. Insert into SQLite (FTS5 auto-syncs via triggers)
   const inserted = bulkInsertFaqs(faqData);
   console.log(`[Seed] Inserted ${inserted} FAQs into SQLite`);
 
-  // 4. Read back with IDs and index to Qdrant
+  // 4. Rebuild FTS5 index for safety
+  rebuildFtsIndex();
+
+  // 5. Generate embeddings and insert into faq_vec
   const faqs = getAllFaqs();
-  console.log(`[Seed] Indexing ${faqs.length} FAQs to Qdrant...\n`);
+  console.log(`[Seed] Generating embeddings for ${faqs.length} FAQs...\n`);
   await upsertFaqItems(faqs);
 
-  // 5. Cleanup
+  // 7. Verify
+  console.log(`\n[Seed] Verification:`);
+  console.log(`  FAQ count: ${getFaqCount()}`);
+  console.log(`  Vector count: ${getVectorCount()}`);
+
+  // 8. Cleanup
   closeDb();
   console.log('\n[Seed] Complete!');
 }

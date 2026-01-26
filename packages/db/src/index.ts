@@ -2,14 +2,44 @@
  * @repo/db - SQLite FAQ Database
  *
  * Bun 네이티브 SQLite를 사용한 FAQ 저장소입니다.
- * 벡터 검색은 Qdrant에서, 메타데이터/CRUD는 여기서 처리합니다.
+ * FTS5 키워드 검색 + sqlite-vec 벡터 검색을 지원합니다.
  */
 
 import { Database } from 'bun:sqlite';
+import { existsSync } from 'fs';
+import { resolve, join } from 'path';
+import * as sqliteVec from 'sqlite-vec';
 import type { FaqItem, ChatMessage, Session } from '@repo/shared';
 
-// 데이터베이스 파일 경로
-const DB_PATH = process.env.DB_PATH ?? 'data/faq.db';
+// macOS는 Apple 전용 SQLite를 사용하므로 확장 로딩이 불가.
+// Homebrew로 설치한 vanilla SQLite를 사용해야 함.
+if (process.platform === 'darwin') {
+  const customPath = process.env.SQLITE_LIB_PATH;
+  if (customPath) {
+    Database.setCustomSQLite(customPath);
+  } else {
+    const brewPaths = [
+      '/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib', // Apple Silicon
+      '/usr/local/opt/sqlite/lib/libsqlite3.dylib',    // Intel Mac
+    ];
+    for (const p of brewPaths) {
+      if (existsSync(p)) {
+        Database.setCustomSQLite(p);
+        break;
+      }
+    }
+  }
+}
+
+/** sqlite-vec 벡터 차원 (text-embedding-3-small) */
+export const EMBEDDING_DIMENSION = parseInt(process.env.EMBEDDING_DIMENSION || '512', 10);
+
+// 모노레포 루트 기준으로 DB 경로 해석
+// import.meta.dir = packages/db/src → 3단계 상위가 모노레포 루트
+const MONOREPO_ROOT = resolve(import.meta.dir, '..', '..', '..');
+const DB_PATH = process.env.DB_PATH
+  ? resolve(MONOREPO_ROOT, process.env.DB_PATH)
+  : join(MONOREPO_ROOT, 'data', 'faq.db');
 
 // 싱글톤 DB 인스턴스
 let db: Database | null = null;
@@ -38,6 +68,56 @@ function initSchema(db: Database) {
     )
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_faq_category ON faq(category)`);
+
+  // sqlite-vec 확장 로딩
+  sqliteVec.load(db);
+
+  // FTS5 전문 검색 테이블 (faq 테이블과 동기화)
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS faq_fts USING fts5(
+      question,
+      answer,
+      category,
+      content='faq',
+      content_rowid='id'
+    )
+  `);
+
+  // FTS5 자동 동기화 트리거
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS faq_fts_insert AFTER INSERT ON faq BEGIN
+      INSERT INTO faq_fts(rowid, question, answer, category)
+      VALUES (new.id, new.question, new.answer, new.category);
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS faq_fts_delete AFTER DELETE ON faq BEGIN
+      INSERT INTO faq_fts(faq_fts, rowid, question, answer, category)
+      VALUES ('delete', old.id, old.question, old.answer, old.category);
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS faq_fts_update AFTER UPDATE ON faq BEGIN
+      INSERT INTO faq_fts(faq_fts, rowid, question, answer, category)
+      VALUES ('delete', old.id, old.question, old.answer, old.category);
+      INSERT INTO faq_fts(rowid, question, answer, category)
+      VALUES (new.id, new.question, new.answer, new.category);
+    END
+  `);
+
+  // sqlite-vec 벡터 검색 테이블
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS faq_vec USING vec0(
+      embedding float[${EMBEDDING_DIMENSION}] distance_metric=cosine
+    )
+  `);
+
+  // faq 삭제 시 faq_vec도 삭제
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS faq_vec_delete AFTER DELETE ON faq BEGIN
+      DELETE FROM faq_vec WHERE rowid = old.id;
+    END
+  `);
 
   // 세션 테이블
   db.run(`
@@ -191,6 +271,24 @@ export function bulkInsertFaqs(faqs: Omit<FaqItem, 'id'>[]): number {
   return insertMany(faqs);
 }
 
+/** 시딩 전 전체 초기화: 트리거·FTS·vec 드롭 → faq 삭제 → 재생성 */
+export function resetForSeed(): number {
+  const d = getDb();
+  // 트리거 먼저 제거 (DELETE 시 FTS5 동기화 방지)
+  d.run(`DROP TRIGGER IF EXISTS faq_fts_insert`);
+  d.run(`DROP TRIGGER IF EXISTS faq_fts_delete`);
+  d.run(`DROP TRIGGER IF EXISTS faq_fts_update`);
+  d.run(`DROP TRIGGER IF EXISTS faq_vec_delete`);
+  // 가상 테이블 제거
+  d.run(`DROP TABLE IF EXISTS faq_fts`);
+  d.run(`DROP TABLE IF EXISTS faq_vec`);
+  // 이제 안전하게 faq 삭제
+  const result = d.run(`DELETE FROM faq`);
+  // FTS5 + vec + 트리거 재생성
+  initSchema(d);
+  return result.changes;
+}
+
 /** 모든 FAQ 삭제 (재시딩용) */
 export function clearAllFaqs(): number {
   const result = getDb().run(`DELETE FROM faq`);
@@ -314,7 +412,9 @@ export type AnalyticsEventType =
   | 'faq_created'
   | 'faq_updated'
   | 'faq_deleted'
-  | 'guard_rejected';
+  | 'guard_rejected'
+  | 'feedback_positive'
+  | 'feedback_negative';
 
 /** 분석 이벤트 기록 */
 export function logAnalyticsEvent(event: {
@@ -437,4 +537,38 @@ export function getGuardRejections(days = 7): Array<{ query: string; score: numb
     LIMIT 100
   `);
   return stmt.all(cutoff) as Array<{ query: string; score: number; timestamp: number }>;
+}
+
+// ============================================
+// FTS5 + Vec Helpers
+// ============================================
+
+/** FTS5 인덱스를 기존 faq 데이터에서 재구축 */
+export function rebuildFtsIndex(): void {
+  getDb().run(`INSERT INTO faq_fts(faq_fts) VALUES('rebuild')`);
+  console.log('[DB] FTS5 index rebuilt');
+}
+
+/** faq_vec 테이블 전체 삭제 (재시딩용) */
+export function clearAllVectors(): void {
+  getDb().run(`DELETE FROM faq_vec`);
+  console.log('[DB] Cleared all vectors from faq_vec');
+}
+
+/** faq_vec에 벡터 삽입 */
+export function insertVector(faqId: number, embedding: Float32Array): void {
+  getDb().prepare(
+    `INSERT INTO faq_vec(rowid, embedding) VALUES (?, ?)`
+  ).run(BigInt(faqId), embedding);
+}
+
+/** faq_vec에서 벡터 삭제 */
+export function deleteVector(faqId: number): void {
+  getDb().prepare(`DELETE FROM faq_vec WHERE rowid = ?`).run(BigInt(faqId));
+}
+
+/** faq_vec 벡터 개수 */
+export function getVectorCount(): number {
+  const result = getDb().prepare(`SELECT COUNT(*) as count FROM faq_vec`).get() as { count: number };
+  return result.count;
 }
