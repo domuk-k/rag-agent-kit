@@ -22,7 +22,6 @@ import {
   extractFaqResults,
 } from '@/lib/extract-data';
 import { SourceCard } from './SourceCard';
-import { FaqResultCard } from './FaqResultCard';
 import { StreamingLoader } from './StreamingLoader';
 
 interface FeedbackActions {
@@ -55,16 +54,20 @@ export function MessageContainer({
   // Extract streaming statuses for loading UX
   const streamingStatuses = extractStatuses(streamingData);
 
+  // Only show metadata (sources, FAQ, actions) on the last assistant message
+  const lastAssistantIdx = messages.findLastIndex((m) => m.role === 'assistant');
+
   return (
     <Conversation className="h-full">
       <ConversationContent className="mx-auto max-w-3xl gap-6 px-4 py-6">
-        {messages.map((message) => (
+        {messages.map((message, idx) => (
           <MessageItem
             key={message.id}
             message={message}
             onRelatedQuestionClick={onRelatedQuestionClick}
             isLoading={isLoading}
             feedback={feedback}
+            isLastAssistant={idx === lastAssistantIdx}
           />
         ))}
 
@@ -87,6 +90,7 @@ interface MessageItemProps {
   onRelatedQuestionClick?: (question: string) => void;
   isLoading?: boolean;
   feedback?: FeedbackActions;
+  isLastAssistant?: boolean;
 }
 
 // Not using memo: AI SDK mutates message objects in-place when annotations arrive
@@ -96,6 +100,7 @@ function MessageItem({
   onRelatedQuestionClick,
   isLoading,
   feedback,
+  isLastAssistant,
 }: MessageItemProps) {
   const { copy, isCopied } = useClipboard();
   const isUser = message.role === 'user';
@@ -173,35 +178,17 @@ function MessageItem({
         </MessageActions>
       )}
 
-      {/* Sources - Perplexity style grid */}
-      {!isUser && sources && sources.length > 0 && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {/* Sources - flat inline badges (last assistant only) */}
+      {isLastAssistant && sources && sources.length > 0 && (
+        <div className="flex flex-wrap gap-2">
           {sources.map((source, idx) => (
             <SourceCard key={source.id ?? idx} source={source} index={idx} />
           ))}
         </div>
       )}
 
-      {/* FAQ Search Results - 유사도 점수, 답변 미리보기 포함 */}
-      {!isUser && faqResults && faqResults.length > 0 && (
-        <div className="mt-3 space-y-2">
-          <p className="text-xs text-muted-foreground font-medium">
-            📚 관련 FAQ ({faqResults.length}개)
-          </p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {faqResults.slice(0, 4).map((result) => (
-              <FaqResultCard
-                key={result.id}
-                result={result}
-                onClick={onRelatedQuestionClick}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 추천 질문 - actions를 Suggestions로 표시 */}
-      {!isUser && actions && actions.length > 0 && (
+      {/* 추천 질문 (last assistant only) */}
+      {isLastAssistant && actions && actions.length > 0 && (
         <div className="mt-4 space-y-2">
           <p className="text-xs text-muted-foreground">🔍 이런 질문도 해보세요</p>
           <Suggestions>
