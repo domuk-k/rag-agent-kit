@@ -20,6 +20,10 @@ function formatDataPart(data: unknown[]): string {
   return `2:${JSON.stringify(data)}\n`;
 }
 
+function formatMessageAnnotationPart(annotation: unknown): string {
+  return `8:${JSON.stringify(annotation)}\n`;
+}
+
 function formatFinishPart(): string {
   return `d:{"finishReason":"stop"}\n`;
 }
@@ -143,16 +147,17 @@ export const aiSdkRoutes = new Elysia({ prefix: '/api' })
                   break;
 
                 case 'source':
-                  send(formatDataPart([{ type: 'source', sources: event.sources }]));
+                  // 8: message annotation → message.annotations에 저장
+                  send(formatMessageAnnotationPart({ type: 'source', sources: event.sources }));
                   break;
 
                 case 'action':
-                  send(formatDataPart([{ type: 'action', actions: event.actions }]));
+                  send(formatMessageAnnotationPart({ type: 'action', actions: event.actions }));
                   break;
 
                 case 'faq':
                   // FAQ 검색 결과 전체 전송 (유사도, 답변 포함)
-                  send(formatDataPart([{
+                  send(formatMessageAnnotationPart({
                     type: 'faq',
                     results: event.results.slice(0, 5).map((r) => ({
                       id: r.id,
@@ -161,7 +166,7 @@ export const aiSdkRoutes = new Elysia({ prefix: '/api' })
                       category: r.category,
                       similarity: r.similarity,
                     })),
-                  }]));
+                  }));
                   break;
 
                 case 'status':

@@ -22,9 +22,10 @@ export function useChatExtended(options: UseChatExtendedOptions = {}) {
     },
     onFinish: async (message) => {
       // Save assistant message to IndexedDB
+      // annotations (8: protocol) contains faq/source/action metadata
       try {
-        const data = message.data as unknown[] | undefined;
-        await addMessage('assistant', message.content, data);
+        const annotations = message.annotations as unknown[] | undefined;
+        await addMessage('assistant', message.content, annotations);
       } catch (error) {
         console.error('Failed to save assistant message:', error);
       }

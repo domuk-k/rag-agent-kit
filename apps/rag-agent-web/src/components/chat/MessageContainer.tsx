@@ -13,7 +13,6 @@ import {
   MessageActions,
   MessageAction,
 } from '@/components/ai-elements/message';
-import { Shimmer } from '@/components/ai-elements/shimmer';
 import { Suggestions, Suggestion } from '@/components/ai-elements/suggestion';
 import { useClipboard } from '@/hooks/use-clipboard';
 import { cn } from '@/lib/utils';
@@ -25,6 +24,7 @@ import {
 } from '@/lib/extract-data';
 import { SourceCard } from './SourceCard';
 import { FaqResultCard } from './FaqResultCard';
+import { StreamingLoader } from './StreamingLoader';
 
 interface FeedbackActions {
   submitFeedback: (messageId: string, type: 'positive' | 'negative', faqId?: number) => Promise<void>;
@@ -42,7 +42,7 @@ interface MessageContainerProps {
 
 /**
  * AI Elements Conversation 기반 메시지 컨테이너
- * - Shimmer 로딩 효과
+ * - StreamingLoader 로딩 UX (검색 → 작성 단계 표시)
  * - Suggestions 관련 질문
  * - Task 검색 상태 표시
  */
@@ -53,9 +53,8 @@ export function MessageContainer({
   onRelatedQuestionClick,
   feedback,
 }: MessageContainerProps) {
-  // Extract current streaming status
+  // Extract streaming statuses for loading UX
   const streamingStatuses = extractStatuses(streamingData);
-  const currentStatus = streamingStatuses?.[streamingStatuses.length - 1];
 
   return (
     <Conversation className="h-full">
@@ -70,13 +69,11 @@ export function MessageContainer({
           />
         ))}
 
-        {/* Streaming status with Shimmer */}
+        {/* 스트리밍 로딩 UI — 첫 텍스트가 도착하기 전까지 표시 */}
         {isLoading && messages[messages.length - 1]?.role === 'user' && (
           <Message from="assistant">
             <MessageContent>
-              <Shimmer className="text-base">
-                {currentStatus?.status || '응답을 생성하고 있습니다...'}
-              </Shimmer>
+              <StreamingLoader statuses={streamingStatuses} />
             </MessageContent>
           </Message>
         )}
@@ -102,11 +99,11 @@ const MessageItem = memo(function MessageItem({
   const { copy, isCopied } = useClipboard();
   const isUser = message.role === 'user';
 
-  // Extract data from message
-  const data = message.data as Array<Record<string, unknown>> | undefined;
-  const sources = extractSources(data);
-  const actions = extractActions(data);
-  const faqResults = extractFaqResults(data);
+  // Extract data from message annotations (AI SDK 8: protocol)
+  const annotations = message.annotations as Array<Record<string, unknown>> | undefined;
+  const sources = extractSources(annotations);
+  const actions = extractActions(annotations);
+  const faqResults = extractFaqResults(annotations);
 
   // Feedback state
   const currentFeedback = feedback?.getFeedback(message.id);
