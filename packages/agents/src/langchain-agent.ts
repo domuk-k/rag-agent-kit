@@ -64,11 +64,11 @@ export async function* chat(
 
   onStatus?.('FAQ 검색 중...');
 
-  const results = await searchFaq(userMessage, { topK: 5, minScore: LOW_CONFIDENCE });
+  const results = await searchFaq(userMessage, { topK: 5, minScore: 0.0 });
   const topScore = results[0]?.similarity ?? 0;
 
   // ─── Score-based routing ───────────────────────────
-  if (topScore < LOW_CONFIDENCE || results.length === 0) {
+  if (topScore < LOW_CONFIDENCE) {
     // LOW: 범위 외 → 정해진 안내 메시지
     logAnalyticsEvent({
       eventType: 'guard_rejected',
@@ -152,7 +152,8 @@ export async function* chatWithEvents(
   yield { type: 'status', status: 'FAQ 검색 중...', level: 'loading' };
 
   // Step 1: 하이브리드 검색 (FTS5 + sqlite-vec + RRF)
-  const results = await searchFaq(userMessage, { topK: 5, minScore: LOW_CONFIDENCE });
+  // minScore: 0.0 → 추천 질문/참고 FAQ에 더 많은 후보 확보
+  const results = await searchFaq(userMessage, { topK: 5, minScore: 0.0 });
   const topScore = results[0]?.similarity ?? 0;
 
   console.log(
@@ -160,7 +161,7 @@ export async function* chatWithEvents(
   );
 
   // ─── LOW: 범위 외 ─────────────────────────────────
-  if (topScore < LOW_CONFIDENCE || results.length === 0) {
+  if (topScore < LOW_CONFIDENCE) {
     logAnalyticsEvent({
       eventType: 'guard_rejected',
       metadata: { query: userMessage, score: topScore },
@@ -171,9 +172,6 @@ export async function* chatWithEvents(
     yield { type: 'status', status: '완료', level: 'success' };
     return;
   }
-
-  // Emit FAQ results
-  yield { type: 'faq', results };
 
   // ─── HIGH: 직접 반환 ──────────────────────────────
   if (topScore >= HIGH_CONFIDENCE) {
@@ -199,7 +197,9 @@ export async function* chatWithEvents(
     streaming: true,
   });
 
-  const faqContext = results
+  // LLM에는 유사도 0.3 이상인 결과만 컨텍스트로 전달
+  const relevantResults = results.filter((r) => r.similarity >= LOW_CONFIDENCE);
+  const faqContext = relevantResults
     .map((r, i) => `[${i + 1}] Q: ${r.question}\nA: ${r.answer}`)
     .join('\n\n');
 
@@ -245,26 +245,39 @@ function formatDirectAnswer(faq: FaqSearchResult): string {
   return faq.answer;
 }
 
-/** 출처 + 관련 질문 이벤트 생성 */
+/**
+ * 텍스트 응답 이후에 emit되는 메타데이터 이벤트들.
+ * AI SDK는 첫 text part(0:) 이후에 온 data part(2:)만
+ * message.data에 연결하므로, 반드시 텍스트 이후에 호출해야 함.
+ */
 async function* emitTrailingEvents(
   results: FaqSearchResult[],
   userMessage: string
 ): AsyncGenerator<ChatEvent, void, unknown> {
-  if (results.length > 0) {
-    const sources = results.slice(0, 1).map((r) => ({
-      title: r.question,
-      category: r.category,
-    }));
-    yield { type: 'source', sources };
+  if (results.length === 0) return;
 
-    const relatedQuestions = results
-      .slice(1, 4)
-      .filter((r) => r.question !== userMessage)
-      .map((r) => ({ label: r.question.slice(0, 30), query: r.question }));
+  // 1. 참고 FAQ: 유사도 0.2 이상인 결과만 카드로 표시
+  const meaningfulResults = results.filter((r) => r.similarity >= 0.2);
+  if (meaningfulResults.length > 0) {
+    yield { type: 'faq', results: meaningfulResults };
+  }
 
-    if (relatedQuestions.length > 0) {
-      yield { type: 'action', actions: relatedQuestions };
-    }
+  // 2. 출처 정보: 최상위 매칭 FAQ
+  const sources = results.slice(0, 1).map((r) => ({
+    title: r.question,
+    category: r.category,
+  }));
+  yield { type: 'source', sources };
+
+  // 3. 추천 질문: 현재 질문 제외, 최대 3개 (낮은 유사도도 포함)
+  const relatedQuestions = results
+    .slice(1)
+    .filter((r) => r.question !== userMessage)
+    .slice(0, 3)
+    .map((r) => ({ label: r.question.slice(0, 30), query: r.question }));
+
+  if (relatedQuestions.length > 0) {
+    yield { type: 'action', actions: relatedQuestions };
   }
 }
 
