@@ -8,12 +8,14 @@
     "dev": "bun run --filter './apps/*' dev",
     "dev:api": "bun run --filter '@repo/api' dev",
     "dev:web": "bun run --filter '@repo/web' dev",
+    "dev:rag-agent-web": "bun run --filter '@repo/rag-agent-web' dev",
     "build": "bun run --filter './packages/*' build && bun run --filter './apps/*' build",
     "typecheck": "bun run --filter '*' typecheck",
-    "qdrant:setup": "bun run --filter '@repo/vector' setup",
-    "seed": "bun run --filter '@repo/db' seed"
+    "db:setup": "bun run packages/vector/src/scripts/setup.ts",
+    "seed": "bun run packages/db/src/scripts/seed.ts"
   },
   "devDependencies": {
+    "csv-parse": "^6.1.0",
     "typescript": "^5.7.0"
   },
   "dependencies": {
