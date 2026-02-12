@@ -12,7 +12,6 @@ import {
   bulkInsertFaqs,
   logAnalyticsEvent,
 } from '@repo/db';
-import { upsertFaqItems, deleteFaqFromVector, resetCollection } from '@repo/vector';
 
 // Admin 인증 체크 - Elysia context의 set 객체 타입 호환
 function checkAdminAuth(
@@ -46,7 +45,7 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
   // GET /api/faq - 전체 FAQ 목록
   .get(
     '/',
-    ({ query }) => {
+    async ({ query }) => {
       const { category } = query;
       if (category) {
         return getFaqsByCategory(category);
@@ -61,20 +60,20 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
   )
 
   // GET /api/faq/categories - 카테고리 목록
-  .get('/categories', () => {
+  .get('/categories', async () => {
     return getCategories();
   })
 
   // GET /api/faq/count - FAQ 개수
-  .get('/count', () => {
-    return { count: getFaqCount() };
+  .get('/count', async () => {
+    return { count: await getFaqCount() };
   })
 
   // GET /api/faq/:id - 단일 FAQ 조회
   .get(
     '/:id',
-    ({ params, set }) => {
-      const faq = getFaqById(Number(params.id));
+    async ({ params, set }) => {
+      const faq = await getFaqById(Number(params.id));
       if (!faq) {
         set.status = 404;
         return { error: 'FAQ not found' };
@@ -99,19 +98,10 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       const authError = checkAdminAuth(bearer, set);
       if (authError) return authError;
 
-      const faq = createFaq(body);
+      const faq = await createFaq(body);
       console.log(`[FAQ] Created: ${faq.id} - ${faq.question}`);
 
-      // faq_vec에 벡터 추가
-      try {
-        await upsertFaqItems([faq]);
-        console.log(`[FAQ] Vector indexed: ${faq.id}`);
-      } catch (error) {
-        console.error(`[FAQ] Vector indexing failed:`, error);
-      }
-
-      // Analytics 이벤트 기록
-      logAnalyticsEvent({
+      await logAnalyticsEvent({
         eventType: 'faq_created',
         metadata: { faqId: faq.id, category: faq.category },
       });
@@ -136,23 +126,14 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       const authError = checkAdminAuth(bearer, set);
       if (authError) return authError;
 
-      const faq = updateFaq(Number(params.id), body);
+      const faq = await updateFaq(Number(params.id), body);
       if (!faq) {
         set.status = 404;
         return { error: 'FAQ not found' };
       }
       console.log(`[FAQ] Updated: ${faq.id} - ${faq.question}`);
 
-      // faq_vec 벡터 업데이트
-      try {
-        await upsertFaqItems([faq]);
-        console.log(`[FAQ] Vector updated: ${faq.id}`);
-      } catch (error) {
-        console.error(`[FAQ] Vector update failed:`, error);
-      }
-
-      // Analytics 이벤트 기록
-      logAnalyticsEvent({
+      await logAnalyticsEvent({
         eventType: 'faq_updated',
         metadata: { faqId: faq.id, category: faq.category },
       });
@@ -180,7 +161,7 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       if (authError) return authError;
 
       const id = Number(params.id);
-      const deleted = deleteFaq(id);
+      const deleted = await deleteFaq(id);
 
       if (!deleted) {
         set.status = 404;
@@ -188,16 +169,7 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       }
       console.log(`[FAQ] Deleted: ${id}`);
 
-      // faq_vec에서 벡터 삭제
-      try {
-        await deleteFaqFromVector(id);
-        console.log(`[FAQ] Vector deleted: ${id}`);
-      } catch (error) {
-        console.error(`[FAQ] Vector deletion failed:`, error);
-      }
-
-      // Analytics 이벤트 기록
-      logAnalyticsEvent({
+      await logAnalyticsEvent({
         eventType: 'faq_deleted',
         metadata: { faqId: id },
       });
@@ -210,43 +182,6 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       }),
     }
   )
-
-  // POST /api/faq/reindex - 전체 재인덱싱
-  .post('/reindex', async ({ bearer, set }) => {
-    const authError = checkAdminAuth(bearer, set);
-    if (authError) return authError;
-
-    const faqs = getAllFaqs();
-    if (faqs.length === 0) {
-      set.status = 400;
-      return { error: 'No FAQs to index' };
-    }
-
-    console.log(`[FAQ] Reindexing ${faqs.length} items...`);
-    await upsertFaqItems(faqs);
-    console.log(`[FAQ] Reindex complete`);
-
-    return { success: true, count: faqs.length };
-  })
-
-  // POST /api/faq/reset - 컬렉션 리셋 후 재인덱싱
-  .post('/reset', async ({ bearer, set }) => {
-    const authError = checkAdminAuth(bearer, set);
-    if (authError) return authError;
-
-    const faqs = getAllFaqs();
-    if (faqs.length === 0) {
-      set.status = 400;
-      return { error: 'No FAQs to index' };
-    }
-
-    console.log(`[FAQ] Resetting collection and reindexing ${faqs.length} items...`);
-    await resetCollection();
-    await upsertFaqItems(faqs);
-    console.log(`[FAQ] Reset and reindex complete`);
-
-    return { success: true, count: faqs.length };
-  })
 
   // POST /api/faq/bulk - FAQ 일괄 등록
   .post(
@@ -263,23 +198,9 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       }
 
       console.log(`[FAQ] Bulk importing ${items.length} items...`);
+      const insertedCount = await bulkInsertFaqs(items);
 
-      // DB에 일괄 삽입
-      const insertedCount = bulkInsertFaqs(items);
-
-      // 새로 추가된 FAQ들 가져와서 벡터 인덱싱
-      const allFaqs = getAllFaqs();
-      const newFaqs = allFaqs.slice(-insertedCount);
-
-      try {
-        await upsertFaqItems(newFaqs);
-        console.log(`[FAQ] Bulk indexed ${insertedCount} items to faq_vec`);
-      } catch (error) {
-        console.error(`[FAQ] Bulk indexing failed:`, error);
-      }
-
-      // Analytics 이벤트 기록
-      logAnalyticsEvent({
+      await logAnalyticsEvent({
         eventType: 'faq_created',
         metadata: { bulkCount: insertedCount },
       });

@@ -12,7 +12,7 @@ export const feedbackRoutes = new Elysia({ prefix: '/api/feedback' }).post(
 
     const eventType = type === 'positive' ? 'feedback_positive' : 'feedback_negative';
 
-    logAnalyticsEvent({
+    await logAnalyticsEvent({
       eventType,
       sessionId,
       metadata: {

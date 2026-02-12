@@ -45,7 +45,7 @@ export async function* chat(
     logAnalyticsEvent({
       eventType: 'guard_rejected',
       metadata: { query: userMessage, score: topScore },
-    });
+    }).catch(console.error);
     for (const char of OUT_OF_SCOPE_MESSAGE) {
       onToken?.(char);
       yield char;
@@ -93,7 +93,7 @@ export async function* chatWithEvents(
     logAnalyticsEvent({
       eventType: 'guard_rejected',
       metadata: { query: userMessage, score: topScore },
-    });
+    }).catch(console.error);
 
     yield { type: 'status', status: '범위 외 질문', level: 'info' };
     yield { type: 'text', content: OUT_OF_SCOPE_MESSAGE };
@@ -109,7 +109,7 @@ export async function* chatWithEvents(
   logAnalyticsEvent({
     eventType: 'faq_accessed',
     metadata: { faq_id: results[0].id, category: results[0].category },
-  });
+  }).catch(console.error);
   yield* emitTrailingEvents(results, userMessage);
   yield { type: 'status', status: '완료', level: 'success' };
 }

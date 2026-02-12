@@ -94,8 +94,8 @@ export const aiSdkRoutes = new Elysia({ prefix: '/api' })
 
       // 세션 관리: 없으면 생성
       const sessionId = inputSessionId ?? generateSessionId();
-      if (!getSession(sessionId)) {
-        createSession(sessionId);
+      if (!(await getSession(sessionId))) {
+        await createSession(sessionId);
       }
 
       // 사용자 메시지 저장
@@ -104,10 +104,10 @@ export const aiSdkRoutes = new Elysia({ prefix: '/api' })
         content: lastUserMessage.content,
         timestamp: Date.now(),
       };
-      addMessage(sessionId, userMessage);
+      await addMessage(sessionId, userMessage);
 
       // 대화 히스토리
-      const history = getSessionMessages(sessionId, 20);
+      const history = await getSessionMessages(sessionId, 20);
 
       console.log(
         `[AI-SDK] Session: ${sessionId}, History: ${history.length}, User: "${lastUserMessage.content}"`
@@ -183,7 +183,7 @@ export const aiSdkRoutes = new Elysia({ prefix: '/api' })
                 content: assistantResponse,
                 timestamp: Date.now(),
               };
-              addMessage(sessionId, assistantMessage);
+              await addMessage(sessionId, assistantMessage);
             }
 
             send(formatFinishPart());

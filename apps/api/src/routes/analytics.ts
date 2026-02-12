@@ -10,7 +10,7 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
   // 인기 질문 조회
   .get(
     '/popular-questions',
-    ({ query }) => {
+    async ({ query }) => {
       const limit = query.limit ? parseInt(query.limit) : 10;
       const days = query.days ? parseInt(query.days) : 7;
       return getPopularQuestions(limit, days);
@@ -25,7 +25,7 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
   // 일별 사용량 조회
   .get(
     '/daily-usage',
-    ({ query }) => {
+    async ({ query }) => {
       const days = query.days ? parseInt(query.days) : 30;
       return getDailyUsage(days);
     },
@@ -38,7 +38,7 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
   // 카테고리별 접근 통계
   .get(
     '/category-breakdown',
-    ({ query }) => {
+    async ({ query }) => {
       const days = query.days ? parseInt(query.days) : 7;
       return getCategoryBreakdown(days);
     },
@@ -51,7 +51,7 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
   // Guard 거부 목록
   .get(
     '/guard-rejections',
-    ({ query }) => {
+    async ({ query }) => {
       const days = query.days ? parseInt(query.days) : 7;
       return getGuardRejections(days);
     },

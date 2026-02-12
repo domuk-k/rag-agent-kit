@@ -13,22 +13,22 @@ import {
 // 30분마다 만료된 세션 정리 (1시간 이상 미사용)
 const CLEANUP_INTERVAL = 30 * 60 * 1000;
 const SESSION_MAX_AGE = 60 * 60 * 1000;
-setInterval(() => {
-  const count = cleanupSessions(SESSION_MAX_AGE);
+setInterval(async () => {
+  const count = await cleanupSessions(SESSION_MAX_AGE);
   if (count > 0) console.log(`[Session] Cleaned up ${count} expired sessions`);
 }, CLEANUP_INTERVAL);
 
 export const chatStreamRoutes = new Elysia({ prefix: '/api' })
   // 세션 생성 엔드포인트
-  .post('/session', () => {
+  .post('/session', async () => {
     const sessionId = generateSessionId();
-    const session = createSession(sessionId);
+    const session = await createSession(sessionId);
     console.log(`[Session] Created: ${session.id}`);
     return { sessionId: session.id };
   })
   // 세션 삭제 엔드포인트
-  .delete('/session/:sessionId', ({ params }) => {
-    const deleted = deleteSession(params.sessionId);
+  .delete('/session/:sessionId', async ({ params }) => {
+    const deleted = await deleteSession(params.sessionId);
     console.log(`[Session] Deleted: ${params.sessionId} (${deleted})`);
     return { success: deleted };
   })
@@ -56,9 +56,9 @@ export const chatStreamRoutes = new Elysia({ prefix: '/api' })
 
       // 세션 관리
       const sessionId = inputSessionId ?? generateSessionId();
-      let session = getSession(sessionId);
+      let session = await getSession(sessionId);
       if (!session) {
-        session = createSession(sessionId);
+        session = await createSession(sessionId);
       }
 
       // 사용자 메시지 저장
@@ -67,10 +67,10 @@ export const chatStreamRoutes = new Elysia({ prefix: '/api' })
         content: lastUserMessage.content,
         timestamp: Date.now(),
       };
-      addMessage(sessionId, userMessage);
+      await addMessage(sessionId, userMessage);
 
       // 대화 히스토리 (최근 10턴)
-      const history = getSessionMessages(sessionId, 20);
+      const history = await getSessionMessages(sessionId, 20);
 
       console.log(
         `[ChatStream] Session: ${sessionId}, History: ${history.length} messages, User: "${lastUserMessage.content}"`
@@ -117,7 +117,7 @@ export const chatStreamRoutes = new Elysia({ prefix: '/api' })
                 content: assistantResponse,
                 timestamp: Date.now(),
               };
-              addMessage(sessionId, assistantMessage);
+              await addMessage(sessionId, assistantMessage);
             }
 
             send({ type: 'done' });
