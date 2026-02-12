@@ -185,6 +185,12 @@ export async function updateFaq(
   return result as FaqItem | null;
 }
 
+/** FAQ 임베딩 업데이트 (vector search용) */
+export async function updateFaqEmbedding(id: number, embedding: number[]): Promise<void> {
+  const col = await faqs();
+  await col.updateOne({ id }, { $set: { embedding } });
+}
+
 /** FAQ 삭제 */
 export async function deleteFaq(id: number): Promise<boolean> {
   const col = await faqs();

@@ -11,6 +11,7 @@
     "setup": "bun run src/scripts/setup.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3",
     "@repo/db": "workspace:*",
     "@repo/shared": "workspace:*"
   }
