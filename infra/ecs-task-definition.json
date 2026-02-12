@@ -2,8 +2,8 @@
   "family": "rag-agent-kit",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "512",
-  "memory": "1024",
+  "cpu": "1024",
+  "memory": "2048",
   "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
   "containerDefinitions": [
@@ -44,7 +44,7 @@
         "interval": 30,
         "timeout": 5,
         "retries": 3,
-        "startPeriod": 30
+        "startPeriod": 60
       }
     }
   ]
