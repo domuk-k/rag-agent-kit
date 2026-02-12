@@ -1,6 +1,17 @@
 import { createApp } from './app';
+import { closeDb } from '@repo/db';
 
 const app = createApp().listen(process.env.PORT || 8080);
+
+// ECS Fargate: SIGTERM → 30초 대기 → SIGKILL
+const shutdown = async () => {
+  console.log('[Server] Shutting down...');
+  app.stop();
+  await closeDb();
+  process.exit(0);
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 console.log(`
 ╔═══════════════════════════════════════════════════╗
