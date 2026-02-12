@@ -24,36 +24,43 @@
 
 ### 2. 하이브리드 검색 — `packages/vector/src/search.ts`
 
-에이전트가 가장 먼저 실행하는 단계. 두 가지 검색을 병렬로 수행한 뒤 병합.
+에이전트가 가장 먼저 실행하는 단계. BM25와 Vector Search를 병렬 수행한 뒤 RRF로 병합.
 
 ```
 사용자 질문: "수강 취소는 어떻게 하나요?"
           │
-          ├──→ FTS5 BM25 키워드 검색 (로컬, <1ms)
-          │    "수강" "취소" → faq_fts MATCH → rowid + bm25 순위
+          ├──→ Atlas Search (BM25, lucene.korean)
+          │    $search: text query → searchScore 순위
           │
-          └──→ OpenAI 임베딩 (text-embedding-3-small, 512차원)
-               → sqlite-vec 코사인 거리 검색 (로컬, <5ms)
-               → rowid + distance 순위
+          └──→ Transformers.js 임베딩 (e5-small, 384차원, ~15ms)
+               → Atlas Vector Search ($vectorSearch)
+               → vectorSearchScore 순위
           │
           ▼
     Reciprocal Rank Fusion (k=60)
     ─────────────────────────────
-    양쪽 순위를 RRF 공식으로 합산.
-    두 검색에 모두 등장하는 항목일수록 높은 점수.
-    FTS5-only 매칭은 기본 유사도 0.4 부여.
-    벡터 매칭은 cosine distance → similarity 변환 (1 - distance).
+    양쪽 순위를 RRF 공식으로 합산: score(d) = Σ 1/(k + rank_i)
+    동점 시 vector rank 우선 (의미 유사도가 키워드보다 정확).
           │
           ▼
-    RRF 점수 순 정렬 → topK(5)개 → minScore 필터 → FaqSearchResult[]
+    이중 확인 게이트 (Dual-Source Confirmation)
+    ───────────────────────────────────────────
+    BM25 정규화: rawScore / (rawScore + 2)
+
+    양쪽 모두 매칭 → threshold 0.55 (신뢰도 높음)
+    단독 매칭     → threshold 0.70 (보수적)
+    vector-only   → BM25 norm = 0 → 항상 필터
+          │
+          ▼
+    RRF 순 정렬 → topK(5)개 → threshold 필터 → FaqSearchResult[]
 ```
 
 **핵심 파일**:
 - `search.ts:searchFaq()` — 전체 파이프라인 오케스트레이션
-- `search.ts:ftsSearch()` — FTS5 BM25 쿼리 (`faq_fts MATCH`)
-- `search.ts:vecSearch()` — sqlite-vec 코사인 거리 (`faq_vec MATCH`)
-- `search.ts:reciprocalRankFusion()` — 두 결과 병합
-- `embeddings.ts:getEmbedding()` — OpenAI API 호출
+- `search.ts:runTextSearch()` — Atlas Search BM25 (`$search`)
+- `search.ts:runVectorSearch()` — Atlas Vector Search (`$vectorSearch`)
+- `embeddings.ts:embedQuery()` — Transformers.js ONNX 임베딩 (로컬)
+- `embeddings.ts:embedDocuments()` — 배치 임베딩 (시딩 시)
 
 ### 3. 점수 기반 라우팅 — `packages/agents/src/langchain-agent.ts`
 
@@ -68,7 +75,7 @@ topScore = results[0].similarity
           │   • + faq 이벤트 (참고 FAQ 카드)                         │
           │   • + source 이벤트 (출처)                               │
           │   • + action 이벤트 (추천 질문 최대 3개)                   │
-          │   • <50ms 응답                                          │
+          │   • <50ms 응답 (임베딩 첫 로드 제외)                      │
           │                                                         │
           └── < 0.5 (LOW) ─────────────────────────────────────────┐│
               범위 외 질문으로 판단                                    ││
@@ -114,7 +121,7 @@ Browser (React)                    API (Elysia)                    Agent        
     │                                  │─────────────────────────────▶│                            │
     │                                  │                              │ searchFaq(query)            │
     │                                  │                              │────────────────────────────▶│
-    │                                  │                              │                            │ FTS5 + 벡터 + RRF
+    │                                  │                              │                            │ BM25 + Vector + RRF
     │                                  │                              │◀────────────────────────────│
     │                                  │                              │                            │
     │                                  │                              │ 점수 분기                    │
@@ -154,30 +161,52 @@ packages/
 │       ├── langchain-agent.ts   # chat(), chatWithEvents() — 핵심 로직
 │       └── index.ts             # re-export
 │
-├── db/                      # SQLite (Bun 네이티브)
-│   └── src/index.ts             # 스키마, CRUD, 세션, 분석 이벤트
+├── db/                      # MongoDB Atlas
+│   └── src/
+│       ├── index.ts             # 연결, CRUD, 세션, 분석 이벤트
+│       ├── types.ts             # FaqDocument (embedding 포함)
+│       └── scripts/seed.ts      # JSON → MongoDB + 임베딩 생성
 │
 ├── vector/                  # 하이브리드 검색
 │   └── src/
-│       ├── search.ts            # searchFaq() — FTS5 + sqlite-vec + RRF
-│       └── embeddings.ts        # OpenAI 임베딩 API
+│       ├── search.ts            # searchFaq() — BM25 + Vector + RRF
+│       └── embeddings.ts        # Transformers.js 로컬 임베딩
 │
 ├── protocol/                # Eden Treaty 타입 안전 API 계약
 └── shared/                  # 공통 타입 (FaqItem, SSEEvent, ChatMessage)
 ```
 
-## Database Schema
+## Database — MongoDB Atlas (M0 Free Tier)
 
-SQLite (Bun 네이티브) — `packages/db/src/index.ts`
+Collection: `faqs`
 
-| 테이블 | 용도 |
-|--------|------|
-| `faq` | FAQ 데이터 (id, category, subcategory, question, answer) |
-| `faq_fts` | FTS5 가상 테이블 — INSERT/UPDATE/DELETE 트리거로 자동 동기화 |
-| `faq_vec` | sqlite-vec 임베딩 저장 (rowid → Float32 벡터, 512차원) |
-| `sessions` | 대화 세션 (id: `sess_{ts}_{rand}`, created_at, updated_at) |
-| `messages` | 세션별 메시지 (FK → sessions.id, role, content, timestamp) |
-| `analytics_events` | 이벤트 로그 (faq_accessed, guard_rejected 등) |
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | number | 순차 ID (1-based) |
+| `category` | string | 카테고리 |
+| `subcategory` | string? | 서브카테고리 |
+| `question` | string | FAQ 질문 |
+| `answer` | string | FAQ 답변 |
+| `embedding` | number[] | 384차원 e5-small 임베딩 |
+| `createdAt` | Date | 생성일 |
+| `updatedAt` | Date | 수정일 |
+
+### Atlas 인덱스 (M0 무료 3개 중 2개 사용)
+
+| 인덱스 | 타입 | 설명 |
+|--------|------|------|
+| `faq_text_search` | Atlas Search | lucene.korean, question+answer+category |
+| `faq_vector_index` | Vector Search | cosine, 384차원 |
+
+### 임베딩
+
+| 항목 | 값 |
+|------|-----|
+| 모델 | Xenova/multilingual-e5-small (ONNX, int8 양자화) |
+| 차원 | 384 |
+| 크기 | ~113MB (첫 로드 시 다운로드, 이후 캐시) |
+| 속도 | ~15-30ms/query (CPU), 첫 로드 ~2초 |
+| 비용 | 무료 (로컬 실행) |
 
 ## API Endpoints
 
@@ -194,24 +223,23 @@ Base URL: `http://localhost:8080`
 | POST | `/api/faq` | Bearer | FAQ 생성 |
 | PUT | `/api/faq/:id` | Bearer | FAQ 수정 |
 | DELETE | `/api/faq/:id` | Bearer | FAQ 삭제 |
-| POST | `/api/faq/reindex` | Bearer | FTS5 + 벡터 재인덱싱 |
+| POST | `/api/faq/reindex` | Bearer | 임베딩 재생성 |
 | GET | `/api/analytics/*` | - | 인기 질문, 일별 사용량, Guard 거부 로그 |
 | GET | `/health` | - | 헬스체크 |
 
 ## Environment Variables
 
 ```bash
-# Embedding (OpenAI)
-OPENAI_API_KEY=sk-proj-xxx                # 또는 OPENAI_EMBEDDING_API_KEY
-EMBEDDING_MODEL=text-embedding-3-small    # 기본값
-EMBEDDING_DIMENSION=512                   # 기본값
-
-# SQLite
-DB_PATH=data/faq.db
+# MongoDB Atlas
+MONGODB_URI=mongodb+srv://...
 
 # Auth
 ADMIN_TOKEN=your-secret-token
 
 # Server
 PORT=8080
+
+# Optional
+LANGFUSE_SECRET_KEY=...     # 관측성
+LANGFUSE_PUBLIC_KEY=...
 ```
