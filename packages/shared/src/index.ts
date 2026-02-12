@@ -17,11 +17,12 @@ export interface FaqSearchResult extends FaqItem {
 }
 
 export const FAQ_CATEGORIES = [
-  '상품등록',
-  '정산',
-  '배송',
-  '주문',
-  '반품/교환',
+  '일반',
+  '시험/과제',
+  '학습진도',
+  '로그인',
+  '도서',
+  '동영상',
 ] as const;
 
 export type FaqCategory = (typeof FAQ_CATEGORIES)[number];
@@ -55,6 +56,7 @@ export interface ActionEvent {
   actions: {
     label: string;
     query: string;
+    category?: string;
   }[];
 }
 

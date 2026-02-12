@@ -10,7 +10,7 @@ export type ChatEvent =
   | { type: 'text'; content: string }
   | { type: 'status'; status: string; level: 'info' | 'loading' | 'success' | 'error' }
   | { type: 'faq'; results: FaqSearchResult[] }
-  | { type: 'action'; actions: { label: string; query: string }[] }
+  | { type: 'action'; actions: { label: string; query: string; category?: string }[] }
   | { type: 'source'; sources: { title: string; url?: string; category: string }[] };
 
 // ─── Score-based routing threshold ──────────────────────────────
@@ -38,7 +38,7 @@ export async function* chat(
 
   onStatus?.('FAQ 검색 중...');
 
-  const results = await searchFaq(userMessage, { topK: 5, minScore: 0.0 });
+  const results = await searchFaq(userMessage, { topK: 5 });
   const topScore = results[0]?.similarity ?? 0;
 
   if (topScore < CONFIDENCE_THRESHOLD) {
@@ -81,7 +81,7 @@ export async function* chatWithEvents(
 ): AsyncGenerator<ChatEvent, void, unknown> {
   yield { type: 'status', status: 'FAQ 검색 중...', level: 'loading' };
 
-  const results = await searchFaq(userMessage, { topK: 5, minScore: 0.0 });
+  const results = await searchFaq(userMessage, { topK: 5 });
   const topScore = results[0]?.similarity ?? 0;
 
   console.log(
@@ -140,12 +140,12 @@ async function* emitTrailingEvents(
   }));
   yield { type: 'source', sources };
 
-  // 3. 추천 질문: 현재 질문 제외, 최대 3개
+  // 3. 추천 질문: 품질 필터 + 카테고리 정보
   const relatedQuestions = results
     .slice(1)
-    .filter((r) => r.question !== userMessage)
+    .filter((r) => r.similarity >= 0.3 && r.question !== userMessage)
     .slice(0, 3)
-    .map((r) => ({ label: r.question.slice(0, 30), query: r.question }));
+    .map((r) => ({ label: r.question, query: r.question, category: r.category }));
 
   if (relatedQuestions.length > 0) {
     yield { type: 'action', actions: relatedQuestions };

@@ -190,7 +190,7 @@ function MessageItem({
       {/* 추천 질문 (last assistant only) */}
       {isLastAssistant && actions && actions.length > 0 && (
         <div className="mt-4 space-y-2">
-          <p className="text-xs text-muted-foreground">🔍 이런 질문도 해보세요</p>
+          <p className="text-xs text-muted-foreground">이런 질문도 해보세요</p>
           <Suggestions>
             {actions.map((action, idx) => (
               <Suggestion
@@ -199,7 +199,10 @@ function MessageItem({
                 onClick={onRelatedQuestionClick}
                 disabled={isLoading}
               >
-                {action.label.length > 30 ? `${action.label.slice(0, 30)}...` : action.label}
+                {action.category && (
+                  <span className="mr-1 text-muted-foreground">{action.category}</span>
+                )}
+                {action.label}
               </Suggestion>
             ))}
           </Suggestions>

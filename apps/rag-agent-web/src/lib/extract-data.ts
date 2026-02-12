@@ -4,6 +4,7 @@ import type { SourceItem } from '@/types';
 export interface ActionItem {
   label: string;
   query: string;
+  category?: string;
 }
 
 // Status item type
