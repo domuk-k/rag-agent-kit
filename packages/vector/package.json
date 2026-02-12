@@ -8,8 +8,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "setup": "bun run src/scripts/setup.ts",
-    "seed": "bun run src/scripts/seed.ts"
+    "setup": "bun run src/scripts/setup.ts"
   },
   "dependencies": {
     "@repo/db": "workspace:*",

@@ -1,22 +1,20 @@
-import { getDb, getVectorCount, EMBEDDING_DIMENSION } from '@repo/db';
+import { getDb, closeDb, pingDb } from '@repo/db';
 
 async function main() {
-  console.log(`[Setup] Initializing SQLite with FTS5 + sqlite-vec...`);
+  console.log(`[Setup] Checking MongoDB connection...`);
 
-  const db = getDb();
+  await getDb();
+  const ok = await pingDb();
 
-  // Verify sqlite-vec is loaded
-  const { vec_version } = db
-    .prepare(`SELECT vec_version() as vec_version`)
-    .get() as { vec_version: string };
+  if (!ok) {
+    console.error('[Setup] MongoDB connection failed!');
+    process.exit(1);
+  }
 
-  console.log(`[Setup] sqlite-vec version: ${vec_version}`);
-  console.log(`[Setup] Embedding dimension: ${EMBEDDING_DIMENSION}`);
+  console.log(`[Setup] MongoDB connected successfully`);
+  console.log(`[Setup] Done! Ready for Atlas Search.`);
 
-  const vecCount = getVectorCount();
-  console.log(`[Setup] Current vectors in faq_vec: ${vecCount}`);
-
-  console.log(`[Setup] Done! Schema is ready.`);
+  await closeDb();
 }
 
 main().catch(console.error);
