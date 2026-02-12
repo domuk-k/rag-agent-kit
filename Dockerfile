@@ -1,16 +1,29 @@
-FROM oven/bun:1 AS base
+# Stage 1: Dependencies
+FROM oven/bun:1 AS deps
 
 WORKDIR /app
+COPY package.json bun.lock ./
+COPY apps/api/package.json apps/api/
+COPY packages/db/package.json packages/db/
+COPY packages/vector/package.json packages/vector/
+COPY packages/agents/package.json packages/agents/
+COPY packages/shared/package.json packages/shared/
+COPY packages/protocol/package.json packages/protocol/
+
+RUN bun install --frozen-lockfile
+
+# Stage 2: Production
+FROM oven/bun:1
+
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
-RUN bun install
-RUN mkdir -p /app/data
-
-# faq.json을 볼륨 마운트와 무관한 위치에 백업
-# (fly.io 볼륨이 /app/data를 덮어쓰므로)
-RUN cp /app/data/faq.json /app/faq-seed.json 2>/dev/null || true
 
 RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+
 CMD ["/app/entrypoint.sh"]

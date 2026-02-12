@@ -1,4 +1,12 @@
-# SQLite + sqlite-vec는 로컬 파일 기반 — 별도 컨테이너 불필요
-# 향후 서비스 추가 시 사용
+services:
+  mongodb:
+    image: mongo:7
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: rag_agent_kit
 
-services: {}
+volumes:
+  mongo_data:

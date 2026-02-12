@@ -1,3 +1,5 @@
+# DEPRECATED: Migrated to ECS Fargate. See infra/ecs-task-definition.json
+# Keep this file until ECS deployment is verified, then delete.
 app = 'rag-agent-kit-api'
 primary_region = 'nrt'
 
