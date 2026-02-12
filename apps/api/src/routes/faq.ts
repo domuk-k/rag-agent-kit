@@ -6,12 +6,14 @@ import {
   getFaqsByCategory,
   createFaq,
   updateFaq,
+  updateFaqEmbedding,
   deleteFaq,
   getCategories,
   getFaqCount,
   bulkInsertFaqs,
   logAnalyticsEvent,
 } from '@repo/db';
+import { embedDocuments } from '@repo/vector';
 
 // Admin 인증 체크 - Elysia context의 set 객체 타입 호환
 function checkAdminAuth(
@@ -99,6 +101,11 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       if (authError) return authError;
 
       const faq = await createFaq(body);
+
+      // Vector search용 임베딩 생성
+      const [embedding] = await embedDocuments([faq.question]);
+      await updateFaqEmbedding(faq.id, embedding);
+
       console.log(`[FAQ] Created: ${faq.id} - ${faq.question}`);
 
       await logAnalyticsEvent({
@@ -131,6 +138,13 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
         set.status = 404;
         return { error: 'FAQ not found' };
       }
+
+      // question이 변경되면 임베딩 재생성
+      if (body.question) {
+        const [embedding] = await embedDocuments([faq.question]);
+        await updateFaqEmbedding(faq.id, embedding);
+      }
+
       console.log(`[FAQ] Updated: ${faq.id} - ${faq.question}`);
 
       await logAnalyticsEvent({
@@ -180,6 +194,28 @@ export const faqRoutes = new Elysia({ prefix: '/api/faq' })
       params: t.Object({
         id: t.String(),
       }),
+    }
+  )
+
+  // POST /api/faq/reindex - 전체 임베딩 재생성
+  .post(
+    '/reindex',
+    async ({ bearer, set }) => {
+      const authError = checkAdminAuth(bearer, set);
+      if (authError) return authError;
+
+      const allFaqs = await getAllFaqs();
+      console.log(`[FAQ] Reindexing embeddings for ${allFaqs.length} FAQs...`);
+
+      const questions = allFaqs.map((f) => f.question);
+      const embeddings = await embedDocuments(questions);
+
+      for (let i = 0; i < allFaqs.length; i++) {
+        await updateFaqEmbedding(allFaqs[i].id, embeddings[i]);
+      }
+
+      console.log(`[FAQ] Reindex complete: ${allFaqs.length} embeddings updated`);
+      return { success: true, count: allFaqs.length };
     }
   )
 
