@@ -1,171 +1,120 @@
 /**
- * @repo/db - SQLite FAQ Database
+ * @repo/db - MongoDB FAQ Database
  *
- * Bun 네이티브 SQLite를 사용한 FAQ 저장소입니다.
- * FTS5 키워드 검색 + sqlite-vec 벡터 검색을 지원합니다.
+ * MongoDB Atlas를 사용한 FAQ 저장소입니다.
+ * Atlas Search(Nori 한국어 형태소 분석)로 검색을 지원합니다.
  */
 
-import { Database } from 'bun:sqlite';
-import { existsSync } from 'fs';
-import { resolve, join } from 'path';
-import * as sqliteVec from 'sqlite-vec';
+import { MongoClient, type Db, type Collection } from 'mongodb';
 import type { FaqItem, ChatMessage, Session } from '@repo/shared';
+import type {
+  FaqDocument,
+  SessionDocument,
+  MessageDocument,
+  AnalyticsEventDocument,
+  CounterDocument,
+} from './types';
 
-// macOS는 Apple 전용 SQLite를 사용하므로 확장 로딩이 불가.
-// Homebrew로 설치한 vanilla SQLite를 사용해야 함.
-if (process.platform === 'darwin') {
-  const customPath = process.env.SQLITE_LIB_PATH;
-  if (customPath) {
-    Database.setCustomSQLite(customPath);
-  } else {
-    const brewPaths = [
-      '/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib', // Apple Silicon
-      '/usr/local/opt/sqlite/lib/libsqlite3.dylib',    // Intel Mac
-    ];
-    for (const p of brewPaths) {
-      if (existsSync(p)) {
-        Database.setCustomSQLite(p);
-        break;
-      }
-    }
+// ============================================
+// Connection
+// ============================================
+
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
+const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'rag_agent_kit';
+
+let client: MongoClient | null = null;
+let dbInstance: Db | null = null;
+
+/** MongoDB 연결 및 Db 인스턴스 가져오기 */
+export async function getDb(): Promise<Db> {
+  if (dbInstance) return dbInstance;
+
+  client = new MongoClient(MONGODB_URI);
+  await client.connect();
+  dbInstance = client.db(MONGODB_DB_NAME);
+  await ensureIndexes(dbInstance);
+  console.log(`[DB] Connected to MongoDB: ${MONGODB_DB_NAME}`);
+  return dbInstance;
+}
+
+/** MongoDB 연결 종료 */
+export async function closeDb(): Promise<void> {
+  if (client) {
+    await client.close();
+    client = null;
+    dbInstance = null;
   }
 }
 
-/** sqlite-vec 벡터 차원 (text-embedding-3-small) */
-export const EMBEDDING_DIMENSION = parseInt(process.env.EMBEDDING_DIMENSION || '512', 10);
-
-// 모노레포 루트 기준으로 DB 경로 해석
-// import.meta.dir = packages/db/src → 3단계 상위가 모노레포 루트
-const MONOREPO_ROOT = resolve(import.meta.dir, '..', '..', '..');
-const DB_PATH = process.env.DB_PATH
-  ? resolve(MONOREPO_ROOT, process.env.DB_PATH)
-  : join(MONOREPO_ROOT, 'data', 'faq.db');
-
-// 싱글톤 DB 인스턴스
-let db: Database | null = null;
-
-/** DB 인스턴스 가져오기 */
-export function getDb(): Database {
-  if (!db) {
-    db = new Database(DB_PATH, { create: true });
-    initSchema(db);
+/** MongoDB 연결 상태 확인 (health check용) */
+export async function pingDb(): Promise<boolean> {
+  try {
+    const db = await getDb();
+    await db.command({ ping: 1 });
+    return true;
+  } catch {
+    return false;
   }
-  return db;
 }
 
-/** 스키마 초기화 */
-function initSchema(db: Database) {
-  // FAQ 테이블
-  db.run(`
-    CREATE TABLE IF NOT EXISTS faq (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      category TEXT NOT NULL,
-      subcategory TEXT,
-      question TEXT NOT NULL,
-      answer TEXT NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_faq_category ON faq(category)`);
+// ============================================
+// Collections
+// ============================================
 
-  // sqlite-vec 확장 로딩
-  sqliteVec.load(db);
-
-  // FTS5 전문 검색 테이블 (faq 테이블과 동기화)
-  db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS faq_fts USING fts5(
-      question,
-      answer,
-      category,
-      content='faq',
-      content_rowid='id'
-    )
-  `);
-
-  // FTS5 자동 동기화 트리거
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS faq_fts_insert AFTER INSERT ON faq BEGIN
-      INSERT INTO faq_fts(rowid, question, answer, category)
-      VALUES (new.id, new.question, new.answer, new.category);
-    END
-  `);
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS faq_fts_delete AFTER DELETE ON faq BEGIN
-      INSERT INTO faq_fts(faq_fts, rowid, question, answer, category)
-      VALUES ('delete', old.id, old.question, old.answer, old.category);
-    END
-  `);
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS faq_fts_update AFTER UPDATE ON faq BEGIN
-      INSERT INTO faq_fts(faq_fts, rowid, question, answer, category)
-      VALUES ('delete', old.id, old.question, old.answer, old.category);
-      INSERT INTO faq_fts(rowid, question, answer, category)
-      VALUES (new.id, new.question, new.answer, new.category);
-    END
-  `);
-
-  // sqlite-vec 벡터 검색 테이블
-  db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS faq_vec USING vec0(
-      embedding float[${EMBEDDING_DIMENSION}] distance_metric=cosine
-    )
-  `);
-
-  // faq 삭제 시 faq_vec도 삭제
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS faq_vec_delete AFTER DELETE ON faq BEGIN
-      DELETE FROM faq_vec WHERE rowid = old.id;
-    END
-  `);
-
-  // 세션 테이블
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      metadata TEXT
-    )
-  `);
-
-  // 메시지 테이블
-  db.run(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
-      content TEXT NOT NULL,
-      timestamp INTEGER NOT NULL,
-      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-    )
-  `);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)`);
-
-  // 분석 이벤트 테이블
-  db.run(`
-    CREATE TABLE IF NOT EXISTS analytics_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      event_type TEXT NOT NULL,
-      session_id TEXT,
-      timestamp INTEGER NOT NULL,
-      metadata TEXT,
-      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
-    )
-  `);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_type ON analytics_events(event_type)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_timestamp ON analytics_events(timestamp)`);
-
-  console.log(`[DB] Initialized: ${DB_PATH}`);
+async function faqs(): Promise<Collection<FaqDocument>> {
+  return (await getDb()).collection<FaqDocument>('faqs');
 }
 
-/** DB 연결 종료 */
-export function closeDb() {
-  if (db) {
-    db.close();
-    db = null;
-  }
+async function sessions(): Promise<Collection<SessionDocument>> {
+  return (await getDb()).collection<SessionDocument>('sessions');
+}
+
+async function messages(): Promise<Collection<MessageDocument>> {
+  return (await getDb()).collection<MessageDocument>('messages');
+}
+
+async function analyticsEvents(): Promise<Collection<AnalyticsEventDocument>> {
+  return (await getDb()).collection<AnalyticsEventDocument>('analyticsEvents');
+}
+
+async function counters(): Promise<Collection<CounterDocument>> {
+  return (await getDb()).collection<CounterDocument>('counters');
+}
+
+// ============================================
+// Index Setup
+// ============================================
+
+async function ensureIndexes(db: Db): Promise<void> {
+  const faqCol = db.collection('faqs');
+  const sessCol = db.collection('sessions');
+  const msgCol = db.collection('messages');
+  const analyticsCol = db.collection('analyticsEvents');
+
+  await Promise.all([
+    faqCol.createIndex({ id: 1 }, { unique: true }),
+    faqCol.createIndex({ category: 1 }),
+    sessCol.createIndex({ id: 1 }, { unique: true }),
+    sessCol.createIndex({ updatedAt: 1 }),
+    msgCol.createIndex({ sessionId: 1 }),
+    msgCol.createIndex({ timestamp: 1 }),
+    analyticsCol.createIndex({ eventType: 1 }),
+    analyticsCol.createIndex({ timestamp: 1 }),
+  ]);
+}
+
+// ============================================
+// Auto-increment Helper
+// ============================================
+
+async function getNextSequence(name: string): Promise<number> {
+  const col = await counters();
+  const result = await col.findOneAndUpdate(
+    { _id: name },
+    { $inc: { seq: 1 } },
+    { upsert: true, returnDocument: 'after' }
+  );
+  return result!.seq;
 }
 
 // ============================================
@@ -173,142 +122,128 @@ export function closeDb() {
 // ============================================
 
 /** 모든 FAQ 조회 */
-export function getAllFaqs(): FaqItem[] {
-  const stmt = getDb().prepare(`
-    SELECT id, category, subcategory, question, answer
-    FROM faq
-    ORDER BY category, id
-  `);
-  return stmt.all() as FaqItem[];
+export async function getAllFaqs(): Promise<FaqItem[]> {
+  const col = await faqs();
+  const docs = await col
+    .find({}, { projection: { _id: 0, id: 1, category: 1, subcategory: 1, question: 1, answer: 1 } })
+    .sort({ category: 1, id: 1 })
+    .toArray();
+  return docs as FaqItem[];
 }
 
 /** 카테고리별 FAQ 조회 */
-export function getFaqsByCategory(category: string): FaqItem[] {
-  const stmt = getDb().prepare(`
-    SELECT id, category, subcategory, question, answer
-    FROM faq
-    WHERE category = ?
-    ORDER BY id
-  `);
-  return stmt.all(category) as FaqItem[];
+export async function getFaqsByCategory(category: string): Promise<FaqItem[]> {
+  const col = await faqs();
+  const docs = await col
+    .find({ category }, { projection: { _id: 0, id: 1, category: 1, subcategory: 1, question: 1, answer: 1 } })
+    .sort({ id: 1 })
+    .toArray();
+  return docs as FaqItem[];
 }
 
 /** 단일 FAQ 조회 */
-export function getFaqById(id: number): FaqItem | null {
-  const stmt = getDb().prepare(`
-    SELECT id, category, subcategory, question, answer
-    FROM faq
-    WHERE id = ?
-  `);
-  return (stmt.get(id) as FaqItem) ?? null;
+export async function getFaqById(id: number): Promise<FaqItem | null> {
+  const col = await faqs();
+  const doc = await col.findOne(
+    { id },
+    { projection: { _id: 0, id: 1, category: 1, subcategory: 1, question: 1, answer: 1 } }
+  );
+  return doc as FaqItem | null;
 }
 
 /** FAQ 생성 */
-export function createFaq(
-  faq: Omit<FaqItem, 'id'>
-): FaqItem {
-  const stmt = getDb().prepare(`
-    INSERT INTO faq (category, subcategory, question, answer)
-    VALUES (?, ?, ?, ?)
-  `);
-  const result = stmt.run(
-    faq.category,
-    faq.subcategory ?? null,
-    faq.question,
-    faq.answer
-  );
-  return {
-    id: Number(result.lastInsertRowid),
-    ...faq,
+export async function createFaq(faq: Omit<FaqItem, 'id'>): Promise<FaqItem> {
+  const col = await faqs();
+  const id = await getNextSequence('faq_id');
+  const now = new Date();
+
+  const doc: FaqDocument = {
+    id,
+    category: faq.category,
+    subcategory: faq.subcategory ?? null,
+    question: faq.question,
+    answer: faq.answer,
+    createdAt: now,
+    updatedAt: now,
   };
+
+  await col.insertOne(doc);
+  return { id, ...faq };
 }
 
 /** FAQ 수정 */
-export function updateFaq(
+export async function updateFaq(
   id: number,
   updates: Partial<Omit<FaqItem, 'id'>>
-): FaqItem | null {
-  const existing = getFaqById(id);
-  if (!existing) return null;
-
-  const updated = { ...existing, ...updates };
-  const stmt = getDb().prepare(`
-    UPDATE faq
-    SET category = ?, subcategory = ?, question = ?, answer = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `);
-  stmt.run(
-    updated.category,
-    updated.subcategory ?? null,
-    updated.question,
-    updated.answer,
-    id
+): Promise<FaqItem | null> {
+  const col = await faqs();
+  const result = await col.findOneAndUpdate(
+    { id },
+    { $set: { ...updates, updatedAt: new Date() } },
+    { returnDocument: 'after', projection: { _id: 0, id: 1, category: 1, subcategory: 1, question: 1, answer: 1 } }
   );
-  return updated;
+  return result as FaqItem | null;
 }
 
 /** FAQ 삭제 */
-export function deleteFaq(id: number): boolean {
-  const stmt = getDb().prepare(`DELETE FROM faq WHERE id = ?`);
-  const result = stmt.run(id);
-  return result.changes > 0;
+export async function deleteFaq(id: number): Promise<boolean> {
+  const col = await faqs();
+  const result = await col.deleteOne({ id });
+  return result.deletedCount > 0;
 }
 
 /** 여러 FAQ 일괄 삽입 */
-export function bulkInsertFaqs(faqs: Omit<FaqItem, 'id'>[]): number {
-  const stmt = getDb().prepare(`
-    INSERT INTO faq (category, subcategory, question, answer)
-    VALUES (?, ?, ?, ?)
-  `);
+export async function bulkInsertFaqs(faqItems: Omit<FaqItem, 'id'>[]): Promise<number> {
+  const col = await faqs();
+  const now = new Date();
 
-  const insertMany = getDb().transaction((items: Omit<FaqItem, 'id'>[]) => {
-    for (const faq of items) {
-      stmt.run(faq.category, faq.subcategory ?? null, faq.question, faq.answer);
-    }
-    return items.length;
-  });
+  const docs: FaqDocument[] = [];
+  for (const faq of faqItems) {
+    const id = await getNextSequence('faq_id');
+    docs.push({
+      id,
+      category: faq.category,
+      subcategory: faq.subcategory ?? null,
+      question: faq.question,
+      answer: faq.answer,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
 
-  return insertMany(faqs);
+  if (docs.length > 0) {
+    await col.insertMany(docs);
+  }
+  return docs.length;
 }
 
-/** 시딩 전 전체 초기화: 트리거·FTS·vec 드롭 → faq 삭제 → 재생성 */
-export function resetForSeed(): number {
-  const d = getDb();
-  // 트리거 먼저 제거 (DELETE 시 FTS5 동기화 방지)
-  d.run(`DROP TRIGGER IF EXISTS faq_fts_insert`);
-  d.run(`DROP TRIGGER IF EXISTS faq_fts_delete`);
-  d.run(`DROP TRIGGER IF EXISTS faq_fts_update`);
-  d.run(`DROP TRIGGER IF EXISTS faq_vec_delete`);
-  // 가상 테이블 제거
-  d.run(`DROP TABLE IF EXISTS faq_fts`);
-  d.run(`DROP TABLE IF EXISTS faq_vec`);
-  // 이제 안전하게 faq 삭제
-  const result = d.run(`DELETE FROM faq`);
-  // FTS5 + vec + 트리거 재생성
-  initSchema(d);
-  return result.changes;
+/** 시딩 전 전체 초기화 */
+export async function resetForSeed(): Promise<number> {
+  const col = await faqs();
+  const result = await col.deleteMany({});
+  // 카운터도 리셋
+  const counterCol = await counters();
+  await counterCol.updateOne({ _id: 'faq_id' }, { $set: { seq: 0 } }, { upsert: true });
+  return result.deletedCount;
 }
 
 /** 모든 FAQ 삭제 (재시딩용) */
-export function clearAllFaqs(): number {
-  const result = getDb().run(`DELETE FROM faq`);
-  return result.changes;
+export async function clearAllFaqs(): Promise<number> {
+  const col = await faqs();
+  const result = await col.deleteMany({});
+  return result.deletedCount;
 }
 
 /** FAQ 개수 조회 */
-export function getFaqCount(): number {
-  const stmt = getDb().prepare(`SELECT COUNT(*) as count FROM faq`);
-  const result = stmt.get() as { count: number };
-  return result.count;
+export async function getFaqCount(): Promise<number> {
+  const col = await faqs();
+  return col.countDocuments();
 }
 
 /** 카테고리 목록 조회 */
-export function getCategories(): string[] {
-  const stmt = getDb().prepare(`
-    SELECT DISTINCT category FROM faq ORDER BY category
-  `);
-  const results = stmt.all() as { category: string }[];
-  return results.map((r) => r.category);
+export async function getCategories(): Promise<string[]> {
+  const col = await faqs();
+  return col.distinct('category');
 }
 
 // ============================================
@@ -316,57 +251,77 @@ export function getCategories(): string[] {
 // ============================================
 
 /** 세션 생성 */
-export function createSession(sessionId: string, metadata?: Record<string, unknown>): Session {
+export async function createSession(sessionId: string, metadata?: Record<string, unknown>): Promise<Session> {
+  const col = await sessions();
   const now = Date.now();
-  const stmt = getDb().prepare(`
-    INSERT INTO sessions (id, created_at, updated_at, metadata)
-    VALUES (?, ?, ?, ?)
-  `);
-  stmt.run(sessionId, now, now, metadata ? JSON.stringify(metadata) : null);
 
-  logAnalyticsEvent({ eventType: 'session_created', sessionId });
+  const doc: SessionDocument = {
+    id: sessionId,
+    createdAt: now,
+    updatedAt: now,
+    metadata: metadata ?? null,
+  };
+  await col.insertOne(doc);
+
+  logAnalyticsEvent({ eventType: 'session_created', sessionId }).catch(console.error);
 
   return { id: sessionId, messages: [], createdAt: now, updatedAt: now, metadata };
 }
 
 /** 세션 조회 */
-export function getSession(sessionId: string): Session | null {
-  const stmt = getDb().prepare(`SELECT * FROM sessions WHERE id = ?`);
-  const row = stmt.get(sessionId) as { id: string; created_at: number; updated_at: number; metadata: string | null } | null;
+export async function getSession(sessionId: string): Promise<Session | null> {
+  const col = await sessions();
+  const row = await col.findOne({ id: sessionId });
   if (!row) return null;
 
-  const messages = getSessionMessages(sessionId);
+  const msgs = await getSessionMessages(sessionId);
   return {
     id: row.id,
-    messages,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+    messages: msgs,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    metadata: row.metadata ?? undefined,
   };
 }
 
 /** 세션 타임스탬프 업데이트 */
-export function updateSessionTimestamp(sessionId: string): void {
-  const stmt = getDb().prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`);
-  stmt.run(Date.now(), sessionId);
+export async function updateSessionTimestamp(sessionId: string): Promise<void> {
+  const col = await sessions();
+  await col.updateOne({ id: sessionId }, { $set: { updatedAt: Date.now() } });
 }
 
 /** 세션 삭제 */
-export function deleteSession(sessionId: string): boolean {
-  const stmt = getDb().prepare(`DELETE FROM sessions WHERE id = ?`);
-  const result = stmt.run(sessionId);
-  if (result.changes > 0) {
-    logAnalyticsEvent({ eventType: 'session_deleted', sessionId });
+export async function deleteSession(sessionId: string): Promise<boolean> {
+  const col = await sessions();
+  const result = await col.deleteOne({ id: sessionId });
+  // 관련 메시지도 삭제 (CASCADE 모방)
+  const msgCol = await messages();
+  await msgCol.deleteMany({ sessionId });
+
+  if (result.deletedCount > 0) {
+    logAnalyticsEvent({ eventType: 'session_deleted', sessionId }).catch(console.error);
   }
-  return result.changes > 0;
+  return result.deletedCount > 0;
 }
 
 /** 오래된 세션 정리 */
-export function cleanupSessions(maxAge: number): number {
+export async function cleanupSessions(maxAge: number): Promise<number> {
   const cutoff = Date.now() - maxAge;
-  const stmt = getDb().prepare(`DELETE FROM sessions WHERE updated_at < ?`);
-  const result = stmt.run(cutoff);
-  return result.changes;
+  const col = await sessions();
+  const msgCol = await messages();
+
+  // 만료된 세션 ID 목록
+  const expiredSessions = await col.find(
+    { updatedAt: { $lt: cutoff } },
+    { projection: { id: 1 } }
+  ).toArray();
+
+  if (expiredSessions.length === 0) return 0;
+
+  const ids = expiredSessions.map(s => s.id);
+  await msgCol.deleteMany({ sessionId: { $in: ids } });
+  const result = await col.deleteMany({ updatedAt: { $lt: cutoff } });
+  return result.deletedCount;
 }
 
 // ============================================
@@ -374,31 +329,41 @@ export function cleanupSessions(maxAge: number): number {
 // ============================================
 
 /** 메시지 추가 */
-export function addMessage(sessionId: string, message: ChatMessage): void {
-  // 세션이 없으면 생성
-  const session = getSession(sessionId);
+export async function addMessage(sessionId: string, message: ChatMessage): Promise<void> {
+  const session = await getSession(sessionId);
   if (!session) {
-    createSession(sessionId);
+    await createSession(sessionId);
   }
 
-  const stmt = getDb().prepare(`
-    INSERT INTO messages (session_id, role, content, timestamp)
-    VALUES (?, ?, ?, ?)
-  `);
-  stmt.run(sessionId, message.role, message.content, message.timestamp);
-  updateSessionTimestamp(sessionId);
+  const col = await messages();
+  await col.insertOne({
+    sessionId,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+  });
+  await updateSessionTimestamp(sessionId);
 }
 
 /** 세션 메시지 조회 */
-export function getSessionMessages(sessionId: string, limit?: number): ChatMessage[] {
-  const query = limit
-    ? `SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?`
-    : `SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC`;
+export async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessage[]> {
+  const col = await messages();
 
-  const stmt = getDb().prepare(query);
-  const rows = (limit ? stmt.all(sessionId, limit) : stmt.all(sessionId)) as ChatMessage[];
+  if (limit) {
+    // 최신 N개를 가져온 뒤 시간순 정렬
+    const rows = await col
+      .find({ sessionId }, { projection: { _id: 0, role: 1, content: 1, timestamp: 1 } })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .toArray();
+    return rows.reverse() as ChatMessage[];
+  }
 
-  return limit ? rows.reverse() : rows;
+  const rows = await col
+    .find({ sessionId }, { projection: { _id: 0, role: 1, content: 1, timestamp: 1 } })
+    .sort({ timestamp: 1 })
+    .toArray();
+  return rows as ChatMessage[];
 }
 
 // ============================================
@@ -417,87 +382,115 @@ export type AnalyticsEventType =
   | 'feedback_negative';
 
 /** 분석 이벤트 기록 */
-export function logAnalyticsEvent(event: {
+export async function logAnalyticsEvent(event: {
   eventType: AnalyticsEventType;
   sessionId?: string;
   metadata?: Record<string, unknown>;
-}): void {
+}): Promise<void> {
   try {
-    const stmt = getDb().prepare(`
-      INSERT INTO analytics_events (event_type, session_id, timestamp, metadata)
-      VALUES (?, ?, ?, ?)
-    `);
-    stmt.run(
-      event.eventType,
-      event.sessionId ?? null,
-      Date.now(),
-      event.metadata ? JSON.stringify(event.metadata) : null
-    );
+    const col = await analyticsEvents();
+    await col.insertOne({
+      eventType: event.eventType,
+      sessionId: event.sessionId ?? null,
+      timestamp: Date.now(),
+      metadata: event.metadata ?? null,
+    });
   } catch (err) {
     console.error('[Analytics] Failed to log event:', err);
   }
 }
 
 /** 인기 질문 조회 */
-export function getPopularQuestions(limit = 10, days = 7): Array<{ question: string; category: string; count: number }> {
+export async function getPopularQuestions(limit = 10, days = 7): Promise<Array<{ question: string; category: string; count: number }>> {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  const stmt = getDb().prepare(`
-    SELECT
-      json_extract(ae.metadata, '$.faq_id') as faq_id,
-      COUNT(*) as count
-    FROM analytics_events ae
-    WHERE ae.event_type = 'faq_accessed'
-      AND ae.timestamp > ?
-      AND json_extract(ae.metadata, '$.faq_id') IS NOT NULL
-    GROUP BY faq_id
-    ORDER BY count DESC
-    LIMIT ?
-  `);
-  const rows = stmt.all(cutoff, limit) as Array<{ faq_id: number; count: number }>;
+  const col = await analyticsEvents();
 
-  return rows.map((r) => {
-    const faq = getFaqById(r.faq_id);
-    return {
+  const pipeline = [
+    {
+      $match: {
+        eventType: 'faq_accessed',
+        timestamp: { $gt: cutoff },
+        'metadata.faqId': { $ne: null },
+      },
+    },
+    {
+      $group: {
+        _id: '$metadata.faqId',
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { count: -1 as const } },
+    { $limit: limit },
+  ];
+
+  const rows = await col.aggregate(pipeline).toArray();
+
+  const results: Array<{ question: string; category: string; count: number }> = [];
+  for (const r of rows) {
+    const faq = await getFaqById(r._id as number);
+    results.push({
       question: faq?.question ?? 'Unknown',
       category: faq?.category ?? 'Unknown',
       count: r.count,
-    };
-  });
+    });
+  }
+  return results;
 }
 
 /** 일별 사용량 조회 */
-export function getDailyUsage(days = 30): Array<{ date: string; sessions: number; messages: number }> {
+export async function getDailyUsage(days = 30): Promise<Array<{ date: string; sessions: number; messages: number }>> {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
 
-  // 세션 수
-  const sessionStmt = getDb().prepare(`
-    SELECT date(created_at / 1000, 'unixepoch') as date, COUNT(*) as count
-    FROM sessions
-    WHERE created_at > ?
-    GROUP BY date
-    ORDER BY date DESC
-  `);
-  const sessionRows = sessionStmt.all(cutoff) as Array<{ date: string; count: number }>;
+  const sessCol = await sessions();
+  const msgCol = await messages();
+
+  // 세션 수 (createdAt ms → 일별)
+  const sessionPipeline = [
+    { $match: { createdAt: { $gt: cutoff } } },
+    {
+      $group: {
+        _id: {
+          $dateToString: {
+            format: '%Y-%m-%d',
+            date: { $toDate: '$createdAt' },
+          },
+        },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: -1 as const } },
+  ];
 
   // 메시지 수
-  const messageStmt = getDb().prepare(`
-    SELECT date(timestamp / 1000, 'unixepoch') as date, COUNT(*) as count
-    FROM messages
-    WHERE timestamp > ?
-    GROUP BY date
-    ORDER BY date DESC
-  `);
-  const messageRows = messageStmt.all(cutoff) as Array<{ date: string; count: number }>;
+  const messagePipeline = [
+    { $match: { timestamp: { $gt: cutoff } } },
+    {
+      $group: {
+        _id: {
+          $dateToString: {
+            format: '%Y-%m-%d',
+            date: { $toDate: '$timestamp' },
+          },
+        },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: -1 as const } },
+  ];
 
-  // 날짜별 합치기
+  const [sessionRows, messageRows] = await Promise.all([
+    sessCol.aggregate(sessionPipeline).toArray(),
+    msgCol.aggregate(messagePipeline).toArray(),
+  ]);
+
   const dateMap = new Map<string, { sessions: number; messages: number }>();
   for (const r of sessionRows) {
-    dateMap.set(r.date, { sessions: r.count, messages: 0 });
+    dateMap.set(r._id as string, { sessions: r.count, messages: 0 });
   }
   for (const r of messageRows) {
-    const existing = dateMap.get(r.date) ?? { sessions: 0, messages: 0 };
+    const existing = dateMap.get(r._id as string) ?? { sessions: 0, messages: 0 };
     existing.messages = r.count;
-    dateMap.set(r.date, existing);
+    dateMap.set(r._id as string, existing);
   }
 
   return Array.from(dateMap.entries())
@@ -506,69 +499,54 @@ export function getDailyUsage(days = 30): Array<{ date: string; sessions: number
 }
 
 /** 카테고리별 접근 통계 */
-export function getCategoryBreakdown(days = 7): Array<{ category: string; count: number }> {
+export async function getCategoryBreakdown(days = 7): Promise<Array<{ category: string; count: number }>> {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  const stmt = getDb().prepare(`
-    SELECT
-      json_extract(metadata, '$.category') as category,
-      COUNT(*) as count
-    FROM analytics_events
-    WHERE event_type = 'faq_accessed'
-      AND timestamp > ?
-      AND json_extract(metadata, '$.category') IS NOT NULL
-    GROUP BY category
-    ORDER BY count DESC
-  `);
-  return stmt.all(cutoff) as Array<{ category: string; count: number }>;
+  const col = await analyticsEvents();
+
+  const pipeline = [
+    {
+      $match: {
+        eventType: 'faq_accessed',
+        timestamp: { $gt: cutoff },
+        'metadata.category': { $ne: null },
+      },
+    },
+    {
+      $group: {
+        _id: '$metadata.category',
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { count: -1 as const } },
+  ];
+
+  const rows = await col.aggregate(pipeline).toArray();
+  return rows.map(r => ({ category: r._id as string, count: r.count }));
 }
 
 /** Guard 거부 목록 */
-export function getGuardRejections(days = 7): Array<{ query: string; score: number; timestamp: number }> {
+export async function getGuardRejections(days = 7): Promise<Array<{ query: string; score: number; timestamp: number }>> {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  const stmt = getDb().prepare(`
-    SELECT
-      json_extract(metadata, '$.query') as query,
-      json_extract(metadata, '$.score') as score,
-      timestamp
-    FROM analytics_events
-    WHERE event_type = 'guard_rejected'
-      AND timestamp > ?
-    ORDER BY timestamp DESC
-    LIMIT 100
-  `);
-  return stmt.all(cutoff) as Array<{ query: string; score: number; timestamp: number }>;
+  const col = await analyticsEvents();
+
+  const docs = await col
+    .find(
+      { eventType: 'guard_rejected', timestamp: { $gt: cutoff } },
+      { projection: { 'metadata.query': 1, 'metadata.score': 1, timestamp: 1 } }
+    )
+    .sort({ timestamp: -1 })
+    .limit(100)
+    .toArray();
+
+  return docs.map(d => ({
+    query: (d.metadata?.query as string) ?? '',
+    score: (d.metadata?.score as number) ?? 0,
+    timestamp: d.timestamp,
+  }));
 }
 
 // ============================================
-// FTS5 + Vec Helpers
+// Re-exports
 // ============================================
 
-/** FTS5 인덱스를 기존 faq 데이터에서 재구축 */
-export function rebuildFtsIndex(): void {
-  getDb().run(`INSERT INTO faq_fts(faq_fts) VALUES('rebuild')`);
-  console.log('[DB] FTS5 index rebuilt');
-}
-
-/** faq_vec 테이블 전체 삭제 (재시딩용) */
-export function clearAllVectors(): void {
-  getDb().run(`DELETE FROM faq_vec`);
-  console.log('[DB] Cleared all vectors from faq_vec');
-}
-
-/** faq_vec에 벡터 삽입 */
-export function insertVector(faqId: number, embedding: Float32Array): void {
-  getDb().prepare(
-    `INSERT INTO faq_vec(rowid, embedding) VALUES (?, ?)`
-  ).run(BigInt(faqId), embedding);
-}
-
-/** faq_vec에서 벡터 삭제 */
-export function deleteVector(faqId: number): void {
-  getDb().prepare(`DELETE FROM faq_vec WHERE rowid = ?`).run(BigInt(faqId));
-}
-
-/** faq_vec 벡터 개수 */
-export function getVectorCount(): number {
-  const result = getDb().prepare(`SELECT COUNT(*) as count FROM faq_vec`).get() as { count: number };
-  return result.count;
-}
+export type { FaqDocument, SessionDocument, MessageDocument, AnalyticsEventDocument, CounterDocument } from './types';

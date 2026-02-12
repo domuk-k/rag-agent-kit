@@ -12,6 +12,6 @@
   },
   "dependencies": {
     "@repo/shared": "workspace:*",
-    "sqlite-vec": "^0.1.7-alpha.2"
+    "mongodb": "^6.12.0"
   }
 }

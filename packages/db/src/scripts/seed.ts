@@ -1,8 +1,7 @@
 /**
  * FAQ Database Seed Script
  *
- * JSON 파일에서 FAQ 데이터를 읽어 SQLite에 저장하고,
- * FTS5 인덱스와 sqlite-vec 벡터를 생성합니다.
+ * JSON 파일에서 FAQ 데이터를 읽어 MongoDB에 저장합니다.
  *
  * Usage: bun run seed (from project root)
  */
@@ -12,14 +11,10 @@ import { join } from 'path';
 import {
   resetForSeed,
   bulkInsertFaqs,
-  getAllFaqs,
   getDb,
   closeDb,
-  rebuildFtsIndex,
-  getVectorCount,
   getFaqCount,
 } from '../index';
-import { upsertFaqItems } from '@repo/vector';
 import type { FaqItem } from '@repo/shared';
 
 async function loadFaqJson(): Promise<Omit<FaqItem, 'id'>[]> {
@@ -50,32 +45,26 @@ async function loadFaqJson(): Promise<Omit<FaqItem, 'id'>[]> {
 async function main() {
   console.log('[Seed] Starting FAQ database seed...\n');
 
-  // 1. Load FAQ data from JSON
+  // 1. Ensure MongoDB connection
+  await getDb();
+
+  // 2. Load FAQ data from JSON
   const faqData = await loadFaqJson();
 
-  // 2. Reset DB (drops FTS5/vec/triggers → clears faq → recreates schema)
-  const cleared = resetForSeed();
-  console.log(`[Seed] Cleared ${cleared} existing FAQs from SQLite`);
+  // 3. Reset DB (clear all FAQs + reset counter)
+  const cleared = await resetForSeed();
+  console.log(`[Seed] Cleared ${cleared} existing FAQs from MongoDB`);
 
-  // 3. Insert into SQLite (FTS5 auto-syncs via triggers)
-  const inserted = bulkInsertFaqs(faqData);
-  console.log(`[Seed] Inserted ${inserted} FAQs into SQLite`);
+  // 4. Insert into MongoDB
+  const inserted = await bulkInsertFaqs(faqData);
+  console.log(`[Seed] Inserted ${inserted} FAQs into MongoDB`);
 
-  // 4. Rebuild FTS5 index for safety
-  rebuildFtsIndex();
-
-  // 5. Generate embeddings and insert into faq_vec
-  const faqs = getAllFaqs();
-  console.log(`[Seed] Generating embeddings for ${faqs.length} FAQs...\n`);
-  await upsertFaqItems(faqs);
-
-  // 7. Verify
+  // 5. Verify
   console.log(`\n[Seed] Verification:`);
-  console.log(`  FAQ count: ${getFaqCount()}`);
-  console.log(`  Vector count: ${getVectorCount()}`);
+  console.log(`  FAQ count: ${await getFaqCount()}`);
 
-  // 8. Cleanup
-  closeDb();
+  // 6. Cleanup
+  await closeDb();
   console.log('\n[Seed] Complete!');
 }
 

@@ -12,6 +12,7 @@
     "build": "bun run --filter './packages/*' build && bun run --filter './apps/*' build",
     "typecheck": "bun run --filter '*' typecheck",
     "db:setup": "bun run packages/vector/src/scripts/setup.ts",
+    "db:indexes": "bun run scripts/create-atlas-indexes.ts",
     "seed": "bun run packages/db/src/scripts/seed.ts"
   },
   "devDependencies": {
