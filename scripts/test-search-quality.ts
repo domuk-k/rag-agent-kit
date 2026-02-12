@@ -63,14 +63,14 @@ async function main() {
 
   for (const tc of testCases) {
     total++;
-    const results = await searchFaq(tc.query, { topK: 3, minScore: 0.3 });
+    const results = await searchFaq(tc.query, { topK: 3 });
     const topResult = results[0] ?? null;
     const topId = topResult?.id ?? null;
     const topScore = topResult?.similarity ?? 0;
 
     const isOutOfScope = tc.expectedFaqId === null;
     const isCorrect = isOutOfScope
-      ? topScore < 0.5 // 범위 외: 0.5 미만이면 정답
+      ? results.length === 0 // 범위 외: minScore(0.7) 필터로 결과 없으면 정답
       : topId === tc.expectedFaqId;
 
     if (isCorrect) correct++;
@@ -88,7 +88,7 @@ async function main() {
     if (isOutOfScope) {
       console.log(`  ${mark} [${tc.category}] "${tc.query}"`);
       console.log(`    → 1위: ${topResult ? `"${topResult.question}" (${scoreStr})` : '결과 없음'}`);
-      console.log(`    → 기대: 0.5 미만 (범위 외), 실제: ${scoreStr}`);
+      console.log(`    → 기대: 결과 없음 (범위 외), 실제: ${results.length}건 (${scoreStr})`);
     } else {
       console.log(`  ${mark} [${tc.category}] "${tc.query}"`);
       console.log(`    → 1위: ${topResult ? `[${topId}] "${topResult.question}" (${scoreStr})` : '결과 없음'}`);

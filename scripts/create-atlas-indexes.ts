@@ -1,13 +1,11 @@
 /**
- * Atlas Search 인덱스 생성 스크립트
- *
- * Atlas M0 (무료 클러스터)에서는 이 스크립트 대신 Atlas UI에서 수동으로 인덱스를 생성해야 합니다.
- * M10+ (유료 클러스터)에서는 이 스크립트로 프로그래매틱하게 생성 가능합니다.
+ * Atlas Search + Vector Search 인덱스 생성 스크립트
  *
  * Usage: bun run db:indexes
  */
 
 import { getDb, closeDb } from '@repo/db';
+import { EMBEDDING_DIMENSIONS } from '@repo/vector';
 
 const TEXT_SEARCH_INDEX = {
   name: 'faq_text_search',
@@ -34,29 +32,50 @@ const TEXT_SEARCH_INDEX = {
   },
 };
 
+const VECTOR_SEARCH_INDEX = {
+  name: 'faq_vector_index',
+  type: 'vectorSearch',
+  definition: {
+    fields: [
+      {
+        type: 'vector',
+        path: 'embedding',
+        numDimensions: EMBEDDING_DIMENSIONS,
+        similarity: 'cosine',
+      },
+    ],
+  },
+};
+
+async function createIndex(col: any, index: any) {
+  try {
+    console.log(`[Indexes] Creating: ${index.name}...`);
+    await col.createSearchIndex(index);
+    console.log(`[Indexes] Created: ${index.name}`);
+  } catch (err: any) {
+    if (err.codeName === 'IndexAlreadyExists' || err.message?.includes('already exists')) {
+      console.log(`[Indexes] Already exists: ${index.name}, skipping.`);
+    } else {
+      console.error(`[Indexes] Failed: ${index.name}:`, err.message);
+    }
+  }
+}
+
 async function main() {
-  console.log('[Indexes] Creating Atlas Search index...\n');
+  console.log('[Indexes] Creating Atlas indexes...\n');
 
   const db = await getDb();
   const col = db.collection('faqs');
 
-  try {
-    console.log('[Indexes] Creating text search index (lucene.korean)...');
-    await col.createSearchIndex(TEXT_SEARCH_INDEX);
-    console.log('[Indexes] Text search index created: faq_text_search');
-  } catch (err: any) {
-    if (err.codeName === 'IndexAlreadyExists' || err.message?.includes('already exists')) {
-      console.log('[Indexes] Text search index already exists, skipping.');
-    } else {
-      console.error('[Indexes] Failed to create text search index:', err.message);
-      console.log('\n  Note: Atlas M0 (free) requires manual index creation via Atlas UI.');
-    }
-  }
+  await createIndex(col, TEXT_SEARCH_INDEX);
+  await createIndex(col, VECTOR_SEARCH_INDEX);
 
   console.log('\n[Indexes] Done!');
-  console.log('\nManual index definition for Atlas UI:');
+  console.log('\nManual index definitions for Atlas UI:');
   console.log('\n--- faq_text_search (Atlas Search) ---');
   console.log(JSON.stringify(TEXT_SEARCH_INDEX.definition, null, 2));
+  console.log('\n--- faq_vector_index (Vector Search) ---');
+  console.log(JSON.stringify(VECTOR_SEARCH_INDEX.definition, null, 2));
 
   await closeDb();
 }
