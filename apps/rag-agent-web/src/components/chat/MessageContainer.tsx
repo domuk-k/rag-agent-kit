@@ -68,6 +68,7 @@ export function MessageContainer({
             isLoading={isLoading}
             feedback={feedback}
             isLastAssistant={idx === lastAssistantIdx}
+            isStreaming={isLoading && idx === lastAssistantIdx}
           />
         ))}
 
@@ -91,6 +92,7 @@ interface MessageItemProps {
   isLoading?: boolean;
   feedback?: FeedbackActions;
   isLastAssistant?: boolean;
+  isStreaming?: boolean;
 }
 
 // Not using memo: AI SDK mutates message objects in-place when annotations arrive
@@ -101,6 +103,7 @@ function MessageItem({
   isLoading,
   feedback,
   isLastAssistant,
+  isStreaming,
 }: MessageItemProps) {
   const { copy, isCopied } = useClipboard();
   const isUser = message.role === 'user';
@@ -129,7 +132,7 @@ function MessageItem({
         {isUser ? (
           <p className="whitespace-pre-wrap">{message.content}</p>
         ) : (
-          <MessageResponse>{message.content}</MessageResponse>
+          <MessageResponse isStreaming={isStreaming}>{message.content}</MessageResponse>
         )}
       </MessageContent>
 

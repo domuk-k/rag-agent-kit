@@ -96,7 +96,9 @@ export async function* chatWithEvents(
     }).catch(console.error);
 
     yield { type: 'status', status: '범위 외 질문', level: 'info' };
-    yield { type: 'text', content: OUT_OF_SCOPE_MESSAGE };
+    for await (const chunk of streamChunked(OUT_OF_SCOPE_MESSAGE)) {
+      yield { type: 'text', content: chunk };
+    }
     yield { type: 'status', status: '완료', level: 'success' };
     return;
   }
@@ -104,7 +106,9 @@ export async function* chatWithEvents(
   // ─── HIGH: FAQ 직접 반환 ───────────────────────────
   yield { type: 'status', status: '답변 반환 중...', level: 'loading' };
 
-  yield { type: 'text', content: results[0].answer };
+  for await (const chunk of streamChunked(results[0].answer)) {
+    yield { type: 'text', content: chunk };
+  }
 
   logAnalyticsEvent({
     eventType: 'faq_accessed',
@@ -112,6 +116,42 @@ export async function* chatWithEvents(
   }).catch(console.error);
   yield* emitTrailingEvents(results, userMessage);
   yield { type: 'status', status: '완료', level: 'success' };
+}
+
+// ─── Text streaming ─────────────────────────────────────────────
+
+/**
+ * 텍스트를 워드 단위 청크로 나눠 점진적으로 yield.
+ * AI SDK 클라이언트에서 토큰 fade-in 애니메이션이 동작하려면
+ * 서버가 텍스트를 여러 chunk로 나눠 보내야 합니다.
+ *
+ * @param text 전체 텍스트
+ * @param wordsPerChunk 청크당 단어 수 (기본 3)
+ * @param delayMs 청크 간 지연 ms (기본 18)
+ */
+async function* streamChunked(
+  text: string,
+  wordsPerChunk = 3,
+  delayMs = 18,
+): AsyncGenerator<string> {
+  // 공백 뒤에서 분리 — 공백을 앞 토큰에 포함시켜 자연스러운 렌더링
+  const words = text.split(/(?<=\s)/);
+  let buffer = '';
+  let count = 0;
+
+  for (const word of words) {
+    buffer += word;
+    count++;
+
+    if (count >= wordsPerChunk || word.includes('\n')) {
+      yield buffer;
+      buffer = '';
+      count = 0;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+
+  if (buffer) yield buffer;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

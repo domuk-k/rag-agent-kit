@@ -19,8 +19,9 @@ import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
-import { createContext, memo, useContext, useEffect, useState } from "react";
+import { createContext, memo, useContext, useEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { useStreamingFadeIn } from "@/hooks/use-streaming-fade";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -303,20 +304,35 @@ export const MessageBranchPage = ({
   );
 };
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
+export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
+  isStreaming?: boolean;
+};
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown
-      className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        className
-      )}
-      plugins={{ code, mermaid, math, cjk }}
-      {...props}
-    />
-  ),
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+  ({ className, isStreaming, ...props }: MessageResponseProps) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const content = typeof props.children === "string" ? props.children : "";
+
+    useStreamingFadeIn(containerRef, content, !!isStreaming);
+
+    return (
+      <div ref={containerRef}>
+        <Streamdown
+          className={cn(
+            "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+            isStreaming && "streaming-active",
+            className
+          )}
+          plugins={{ code, mermaid, math, cjk }}
+          mode={isStreaming ? "streaming" : "static"}
+          {...props}
+        />
+      </div>
+    );
+  },
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    prevProps.isStreaming === nextProps.isStreaming
 );
 
 MessageResponse.displayName = "MessageResponse";
