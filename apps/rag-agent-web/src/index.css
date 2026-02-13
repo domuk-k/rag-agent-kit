@@ -126,40 +126,33 @@
 
 /* Block-level entrance: new paragraphs/code blocks slide up and fade in */
 .streaming-active > * {
-  animation: streamBlockIn 0.35s ease-out both;
+  animation: streamBlockIn 0.3s ease-out both;
 }
 
 @keyframes streamBlockIn {
   from {
     opacity: 0;
-    filter: blur(3px);
     transform: translateY(6px);
   }
   to {
     opacity: 1;
-    filter: blur(0);
     transform: translateY(0);
   }
 }
 
-/* Token-level fade: individual words/chunks that just streamed in */
+/* Token-level fade: individual words/chunks that just streamed in.
+   opacity-only = compositor thread only, zero repaints, no flicker. */
 .token-fade {
   display: inline;
-  animation: tokenFadeIn 0.45s cubic-bezier(0.19, 1, 0.22, 1) both;
+  animation: tokenFadeIn 0.35s cubic-bezier(0.19, 1, 0.22, 1) both;
 }
 
 @keyframes tokenFadeIn {
-  0% {
+  from {
     opacity: 0;
-    filter: blur(6px);
   }
-  40% {
-    opacity: 0.6;
-    filter: blur(2px);
-  }
-  100% {
+  to {
     opacity: 1;
-    filter: blur(0);
   }
 }
 
