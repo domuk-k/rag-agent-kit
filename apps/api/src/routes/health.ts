@@ -10,7 +10,7 @@ export const healthRoutes = new Elysia()
   .get('/health', async () => {
     const dbOk = await pingDb();
     return {
-      status: dbOk && embeddingReady ? 'ok' : 'degraded',
+      status: dbOk ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
       service: 'rag-agent-kit',
       db: dbOk ? 'connected' : 'disconnected',
