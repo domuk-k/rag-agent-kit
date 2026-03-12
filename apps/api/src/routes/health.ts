@@ -2,7 +2,7 @@ import { Elysia } from 'elysia';
 import { pingDb } from '@repo/db';
 import { embedQuery } from '@repo/vector';
 
-// 서버 시작 시 백그라운드 워밍업 (Docker 캐시 있으면 ~2초)
+// 백그라운드 워밍업 — healthcheck와 무관하게 모델 프리로딩
 let embeddingReady = false;
 embedQuery('warmup').then(() => { embeddingReady = true; }).catch(() => {});
 
@@ -19,7 +19,7 @@ export const healthRoutes = new Elysia()
   })
   .get('/', () => ({
     message: 'RAG Agent Kit API',
-    version: '0.2.0',
+    version: '0.3.0',
     endpoints: {
       health: 'GET /health',
       chat: 'POST /api/chat',

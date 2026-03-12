@@ -10,6 +10,7 @@ export interface FaqItem {
   subcategory?: string;
   question: string;
   answer: string;
+  variants?: string[];
 }
 
 export interface FaqSearchResult extends FaqItem {
