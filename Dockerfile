@@ -32,7 +32,7 @@ RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD curl -f http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+  CMD bun -e "fetch('http://localhost:8080/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
 
 CMD ["/app/entrypoint.sh"]

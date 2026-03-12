@@ -7,7 +7,11 @@ let embeddingReady = false;
 embedQuery('warmup').then(() => { embeddingReady = true; }).catch(() => {});
 
 export const healthRoutes = new Elysia()
-  .get('/health', async () => {
+  // ECS healthcheck용 — 프로세스 생존만 확인, 외부 의존 없음
+  .get('/health', () => ({ status: 'ok' }))
+
+  // 상세 상태 확인용 (디버깅/모니터링)
+  .get('/health/detail', async () => {
     const dbOk = await pingDb();
     return {
       status: dbOk ? 'ok' : 'degraded',
@@ -17,11 +21,13 @@ export const healthRoutes = new Elysia()
       embedding: embeddingReady ? 'loaded' : 'loading',
     };
   })
+
   .get('/', () => ({
     message: 'RAG Agent Kit API',
     version: '0.3.0',
     endpoints: {
       health: 'GET /health',
+      healthDetail: 'GET /health/detail',
       chat: 'POST /api/chat',
     },
   }));
